@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# omarchy:summary=Match Dell XPS systems with the Himax HM1092 IR camera and its IR flood LED.
+# omarchy:args=[--driver|--device] [--verbose]
+# omarchy:examples=omarchy hw dell xps ir camera | omarchy hw dell xps ir camera --device
+
+# Detect straight from sysfs so this answers before any camera driver is
+# installed: the face setup needs the answer to decide what is still missing.
+acpi_devices="${OMARCHY_ACPI_DEVICES_PATH:-/sys/bus/acpi/devices}"
+leds_path="${OMARCHY_LEDS_PATH:-/sys/class/leds}"
+i2c_devices="${OMARCHY_I2C_DEVICES_PATH:-/sys/bus/i2c/devices}"
+video4linux="${OMARCHY_VIDEO4LINUX_PATH:-/sys/class/video4linux}"
+
+sensor_hid="HIMX1092"
+sensor_name="hm1092"
+want_driver=0
+want_device=0
+verbose=0
+
+usage() {
+  echo "Usage: omarchy-hw-dell-xps-ir-camera [--driver|--device] [--verbose]" >&2
+  exit 2
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --driver) want_driver=1 ;;
+    --device) want_device=1 want_driver=1 ;;
+    --verbose) verbose=1 ;;
+    *) usage ;;
+  esac
+done
+
+report() {
+  if (( verbose )); then
+    echo "$1" >&2
+  fi
+}
+
+shopt -s nullglob
+sensor_candidates=("$acpi_devices/$sensor_hid":*)
+led_candidates=("$leds_path/${sensor_hid}_"*"::ir_flood_led")
+i2c_candidates=("$i2c_devices/i2c-$sensor_hid":*)
+video_names=("$video4linux"/video*/name)
+shopt -u nullglob
+
+# The DSDT lists the same sensor id once per module variant Dell fits, and only
+# the fitted one reports _STA present (bit 0) and enabled (bit 1).
+sensor_present() {
+  local device status
+
+  for device in "${sensor_candidates[@]}"; do
+    [[ -r $device/status ]] || continue
+    status=$(<"$device/status")
+    [[ $status =~ ^[0-9]+$ ]] || continue
+    if (( (status & 3) == 3 )); then
+      report "sensor: $device (status $status)"
+      return 0
+    fi
+  done
+
+  report "sensor: no enabled $sensor_hid ACPI device"
+  return 1
+}
+
+# The in-tree INT3472 driver exposes the module's IR flood illuminator as a LED
+# named after the sensor, with no sensor driver needed.
+led_present() {
+  local led
+
+  for led in "${led_candidates[@]}"; do
+    [[ -d $led ]] || continue
+    report "led: $led"
+    return 0
+  done
+
+  report "led: no ${sensor_hid}_*::ir_flood_led under $leds_path"
+  return 1
+}
+
+# ACPI creates the sensor's I2C client either way; only a loaded sensor driver
+# binds it.
+driver_bound() {
+  local client driver
+
+  for client in "${i2c_candidates[@]}"; do
+    [[ -e $client/driver ]] || continue
+    driver=$(readlink -f -- "$client/driver")
+    report "driver: ${driver##*/} on ${client##*/}"
+    return 0
+  done
+
+  report "driver: none bound to i2c-$sensor_hid"
+  return 1
+}
+
+# Howdy reads the V4L2 device named after the sensor: the capture node a sensor
+# driver labels, or the grayscale relay a driver package publishes for it.
+ir_device() {
+  local name device
+
+  for name in "${video_names[@]}"; do
+    [[ -r $name ]] || continue
+    grep -qi -- "$sensor_name" "$name" || continue
+    device=${name%/name}
+    device="/dev/${device##*/}"
+    report "device: $device ($(<"$name"))"
+    echo "$device"
+    return 0
+  done
+
+  report "device: no V4L2 device named after $sensor_name"
+  return 1
+}
+
+if ! omarchy-hw-match "XPS"; then
+  report "dmi: not a Dell XPS"
+  exit 1
+fi
+
+sensor_present || exit 1
+led_present || exit 1
+
+if (( want_driver )); then
+  driver_bound || exit 1
+fi
+
+if (( want_device )); then
+  ir_device || exit 1
+fi
+
+exit 0

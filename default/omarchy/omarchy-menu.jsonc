@@ -1,0 +1,8 @@
+{
+  // Menu entries this overlay adds to Omarchy's default/omarchy/omarchy-menu.jsonc
+  // (bin/apply-to-checkout inserts them next to the fingerprint and FIDO2 rows).
+  // The same file works as a user extension at ~/.config/omarchy/extensions/omarchy-menu.jsonc.
+  //  is the Nerd Font camera glyph the capture rows use, written as an escape.
+  "setup.security.face": {"icon":"","label":"Face","when":"omarchy-hw-dell-xps-ir-camera","action":"omarchy-launch-floating-terminal-with-presentation omarchy-setup-security-face"},
+  "remove.security.face": {"icon":"","label":"Face","when":"omarchy-pkg-present howdy","action":"omarchy-launch-floating-terminal-with-presentation omarchy-remove-security-face"},
+}

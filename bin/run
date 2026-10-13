@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# Probe this machine the way the face setup will: every check reported, and
+# the IR device path on stdout once the driver is in place.
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+export PATH="$ROOT/bin:$PATH"
+
+if device=$(omarchy-hw-dell-xps-ir-camera --verbose --device); then
+  echo "ready: omarchy setup security face can use $device"
+else
+  echo "not ready: omarchy setup security face would stop here (see docs/face-authentication.md)" >&2
+  exit 1
+fi

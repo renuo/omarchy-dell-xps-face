@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Install what bin/check needs. Everything else the tests use ships with Omarchy.
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+
+chmod +x "$ROOT"/bin/* "$ROOT"/install/user/first-run/*.hook "$ROOT/test/shell"
+
+omarchy pkg add shellcheck jq
+
+cat <<'EOF'
+
+Ready. Next steps:
+  bin/check                                  lint and run the tests
+  bin/run                                    probe this machine's IR camera
+  bin/apply-to-checkout ~/Work/omarchy       copy the overlay into an Omarchy checkout
+EOF

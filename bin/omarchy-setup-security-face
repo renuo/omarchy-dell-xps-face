@@ -1,0 +1,168 @@
+#!/bin/bash
+
+# omarchy:summary=Set up face authentication with the IR camera for sudo, polkit, and lock screen
+# omarchy:requires-sudo=true
+
+set -e
+
+security_lib=/usr/lib/security
+lock_pam=/etc/pam.d/omarchy-lock-face
+face_marker='pam_howdy[.]so|howdy/pam[.]py'
+
+# A clamshell gate runs before the face module in every stack: a shut lid covers
+# the camera, so it skips face (success=1) and PAM drops straight to the
+# password prompt instead of waiting for Howdy to time out. pam_exec needs a
+# literal absolute path, so point at the fixed /usr/bin one the omarchy package
+# always provides.
+face_gate="auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
+
+# Howdy's package layout decides the PAM module: the beta ships a native
+# pam_howdy.so, the stable release a pam_python script. The package's own file
+# list answers this even though the stable install is readable by root only.
+face_module_line() {
+  local files
+
+  files=$(pacman -Qlq howdy) || return 1
+  if grep -qxF -- "$security_lib/pam_howdy.so" <<<"$files"; then
+    echo "pam_howdy.so"
+  elif grep -qxF -- "$security_lib/howdy/pam.py" <<<"$files"; then
+    echo "pam_python.so $security_lib/howdy/pam.py"
+  else
+    return 1
+  fi
+}
+
+howdy_config_file() {
+  local files
+
+  files=$(pacman -Qlq howdy) || return 1
+  grep -m1 -xF -- "/etc/howdy/config.ini" <<<"$files" ||
+    grep -m1 -xF -- "$security_lib/howdy/config.ini" <<<"$files"
+}
+
+gate_precedes_face() {
+  awk -v gate="$face_gate" -v marker="$face_marker" '
+    $0 ~ marker { if (previous == gate) found = 1; exit }
+    { previous = $0 }
+    END { exit found ? 0 : 1 }' "$1"
+}
+
+configure_stack() {
+  local file=$1 label=$2
+
+  if ! grep -Eq -- "$face_marker" "$file"; then
+    echo "Configuring $label for face authentication..."
+    sudo sed -i "1i auth      sufficient $face_module" "$file"
+  fi
+  if ! gate_precedes_face "$file"; then
+    echo "Adding clamshell gate to $label..."
+    # Insert immediately before the face module so success=1 skips exactly it.
+    sudo sed -i -E "\\%$face_marker%i $face_gate" "$file"
+  fi
+}
+
+setup_pam_config() {
+  configure_stack /etc/pam.d/sudo sudo
+
+  if [[ -f /etc/pam.d/polkit-1 ]]; then
+    configure_stack /etc/pam.d/polkit-1 polkit
+  else
+    echo "Creating polkit configuration with face authentication..."
+    # omarchy:heredoc-expands paths=none -- $face_gate and $face_module are the
+    # literal PAM lines defined above, built from the fixed /usr/bin gate and
+    # Howdy's package file list, shared with the sed insertions so the stacks
+    # cannot drift between files.
+    sudo tee /etc/pam.d/polkit-1 >/dev/null <<EOF
+$face_gate
+auth      sufficient $face_module
+auth      include system-auth
+
+account   include system-auth
+password  include system-auth
+session   include system-auth
+EOF
+  fi
+}
+
+setup_lock_face_pam() {
+  echo "Configuring lock screen for face authentication..."
+  # omarchy:heredoc-expands paths=none -- $face_module is the PAM module line
+  # taken from Howdy's package file list, never from the caller.
+  sudo tee "$lock_pam" >/dev/null <<EOF
+#%PAM-1.0
+auth       required                    $face_module
+account    include                     system-local-login
+EOF
+}
+
+
+echo -e "\e[32mSetting up face authentication with the IR camera.\n\e[0m"
+
+# Bail before installing anything if there's no camera to talk to.
+if ! omarchy-hw-dell-xps-ir-camera; then
+  echo -e "\e[31mNo supported IR camera detected.\e[0m"
+  exit 1
+fi
+
+if ! face_device=$(omarchy-hw-dell-xps-ir-camera --device); then
+  echo -e "\e[31mThe IR camera has no usable driver yet.\e[0m"
+  echo "Install the HM1092 sensor driver and its grayscale relay first, then run this setup again."
+  exit 1
+fi
+
+if [[ $face_device != /dev/video[0-9]* ]]; then
+  echo -e "\e[31mUnexpected IR camera device: $face_device\e[0m"
+  exit 1
+fi
+
+echo "Installing required packages..."
+omarchy-pkg-aur-add howdy pamtester
+
+if ! face_module=$(face_module_line); then
+  echo -e "\e[31mHowdy installed no PAM module.\e[0m"
+  exit 1
+fi
+
+if [[ $face_module == pam_python.so* ]]; then
+  omarchy-pkg-aur-add pam-python
+fi
+
+if ! howdy_config=$(howdy_config_file); then
+  echo -e "\e[31mHowdy installed no configuration file.\e[0m"
+  exit 1
+fi
+
+echo "Pointing Howdy at $face_device..."
+sudo sed -i "s|^device_path *=.*|device_path = $face_device|" "$howdy_config"
+if ! sudo grep -qxF -- "device_path = $face_device" "$howdy_config"; then
+  echo -e "\e[31mCould not set device_path in $howdy_config.\e[0m"
+  exit 1
+fi
+
+# Enroll the first face model
+echo -e "\e[32m\nLet's add your face. Look straight into the camera.\e[0m"
+echo -e "The IR illuminator lights up while the model is captured.\n"
+
+if ! sudo howdy add; then
+  echo -e "\e[31m\nEnrollment failed. Please try again.\e[0m"
+  exit 1
+fi
+
+echo -e "\e[32m\nFace model added successfully!\e[0m"
+
+# Verify through PAM before touching sudo and polkit, the way the lock screen
+# and sudo will use it. Enrollment only proves Howdy saw a face, not that the
+# module can match it from a PAM stack.
+setup_lock_face_pam
+echo -e "\nNow let's verify that it's working correctly. Look into the camera again.\n"
+
+if ! sudo pamtester "${lock_pam##*/}" "$USER" authenticate; then
+  sudo rm -f "$lock_pam"
+  echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
+  exit 1
+fi
+
+setup_pam_config
+
+echo -e "\e[32m\nPerfect! Face authentication is now configured.\e[0m"
+echo "You can use your face for sudo and polkit. The lock screen (Super + Ctrl + L) follows once the lock plugin reads the omarchy-lock-face PAM service."
