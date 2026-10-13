@@ -78,7 +78,9 @@ SH
 chmod +x "$stub_bin"/* "$test_tmp/trusted-id"
 
 write_stack() {
-  printf '%s\n' "$@" >"$pamd/$stack_file"
+  local file=$1
+  shift
+  printf '%s\n' "$@" >"$pamd/$file"
 }
 
 reset_fixture() {
@@ -102,8 +104,8 @@ log_line_of() {
 }
 
 reset_fixture
-stack_file=sudo write_stack "$gate" "$stable_line" "$gate" "$fingerprint_line" "$includes"
-stack_file=polkit-1 write_stack "$gate" "$stable_line" "$includes"
+write_stack sudo "$gate" "$stable_line" "$gate" "$fingerprint_line" "$includes"
+write_stack polkit-1 "$gate" "$stable_line" "$includes"
 printf 'auth required pam_python.so /usr/lib/security/howdy/pam.py\n' >"$pamd/omarchy-lock-face"
 invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output"; cat "$log")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
@@ -117,34 +119,34 @@ grep -Fq "alice's local face models have been removed" "$output" || fail "succes
 pass "removal strips the face pair from sudo and polkit, clears the models and drops the packages"
 
 reset_fixture
-stack_file=sudo write_stack "$gate" "$beta_line" "$includes"
+write_stack sudo "$gate" "$beta_line" "$includes"
 invoke_remove || fail "removal succeeds with the beta module" "$(cat "$output")"
 [[ $(<"$pamd/sudo") == "$includes" ]] || fail "the beta module pair is removed" "$(cat "$pamd/sudo")"
 pass "removal recognises Howdy's native module"
 
 reset_fixture
-stack_file=sudo write_stack "$stable_line" "$gate" "$fingerprint_line" "$includes"
+write_stack sudo "$stable_line" "$gate" "$fingerprint_line" "$includes"
 invoke_remove || fail "removal succeeds over a gateless face line" "$(cat "$output")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
   fail "a gateless face line goes and the fingerprint gate stays" "$(cat "$pamd/sudo")"
 pass "removal takes only the gate directly above the face module"
 
 reset_fixture
-stack_file=sudo write_stack "$includes" "$gate"
+write_stack sudo "$includes" "$gate"
 invoke_remove || fail "removal succeeds with a trailing gate" "$(cat "$output")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$includes" "$gate")" ]] || fail "a stack without face lines is untouched" "$(cat "$pamd/sudo")"
 ! grep -q $'^sudo\tsed' "$log" || fail "a stack without face lines is not rewritten" "$(cat "$log")"
 pass "removal leaves a stack without face lines alone"
 
 reset_fixture
-stack_file=sudo write_stack "$includes"
+write_stack sudo "$includes"
 invoke_remove alice 0 || fail "removal succeeds when nothing is configured" "$(cat "$output")"
 ! grep -q '^sudo' "$log" || fail "nothing configured runs no privileged command" "$(cat "$log")"
 grep -q '^package howdy' "$log" || fail "the package drop still runs" "$(cat "$log")"
 pass "removal is idempotent when face authentication was never set up"
 
 reset_fixture
-stack_file=sudo write_stack "$gate" "$stable_line" "$includes"
+write_stack sudo "$gate" "$stable_line" "$includes"
 invoke_remove alice 1 1 && fail "a failed model clear fails the removal"
 ! grep -q '^package' "$log" || fail "a failed model clear stops the package drop" "$(cat "$log")"
 ! grep -q 'have been removed' "$output" || fail "a failed model clear suppresses success" "$(cat "$output")"
@@ -152,7 +154,7 @@ pass "a failed model clear stops the package removal"
 
 for name in '' . .. 'other/name'; do
   reset_fixture
-  stack_file=sudo write_stack "$gate" "$stable_line" "$includes"
+  write_stack sudo "$gate" "$stable_line" "$includes"
   invoke_remove "$name" && fail "unsafe identity must fail: $name"
   ! grep -Eq '^sudo|^package' "$log" || fail "unsafe identity changed host state: $name" "$(cat "$log")"
 done
