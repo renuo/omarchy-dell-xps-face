@@ -16,7 +16,8 @@ copy="$test_tmp/remove.sh"
 mkdir -p "$stub_bin"
 
 gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-stable_line='auth      sufficient pam_python.so /usr/lib/security/howdy/pam.py'
+stable_line='auth      sufficient pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match'
+legacy_line='auth      sufficient pam_python.so /usr/lib/security/howdy/pam.py'
 beta_line='auth      sufficient pam_howdy.so'
 fingerprint_line='auth      sufficient pam_fprintd.so'
 includes=$(printf '%s\n' $'auth\t\tinclude\t\tsystem-auth' $'account\t\tinclude\t\tsystem-auth')
@@ -106,7 +107,7 @@ log_line_of() {
 reset_fixture
 write_stack sudo "$gate" "$stable_line" "$gate" "$fingerprint_line" "$includes"
 write_stack polkit-1 "$gate" "$stable_line" "$includes"
-printf 'auth required pam_python.so /usr/lib/security/howdy/pam.py\n' >"$pamd/omarchy-lock-face"
+printf 'auth required pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match\n' >"$pamd/omarchy-lock-face"
 invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output"; cat "$log")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
   fail "sudo keeps the fingerprint pair and loses only the face pair" "$(cat "$pamd/sudo")"
@@ -123,6 +124,12 @@ write_stack sudo "$gate" "$beta_line" "$includes"
 invoke_remove || fail "removal succeeds with the beta module" "$(cat "$output")"
 [[ $(<"$pamd/sudo") == "$includes" ]] || fail "the beta module pair is removed" "$(cat "$pamd/sudo")"
 pass "removal recognises Howdy's native module"
+
+reset_fixture
+write_stack sudo "$gate" "$legacy_line" "$includes"
+invoke_remove || fail "removal succeeds over the pam_python glue of an earlier setup" "$(cat "$output")"
+[[ $(<"$pamd/sudo") == "$includes" ]] || fail "the pam_python pair is removed" "$(cat "$pamd/sudo")"
+pass "removal recognises the pam_python glue of earlier setups"
 
 reset_fixture
 write_stack sudo "$stable_line" "$gate" "$fingerprint_line" "$includes"

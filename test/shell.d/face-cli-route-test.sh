@@ -9,7 +9,7 @@ require_command jq
 test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp"' EXIT
 
-commands=(omarchy-hw-dell-xps-ir-camera omarchy-setup-security-face omarchy-remove-security-face)
+commands=(omarchy-hw-dell-xps-ir-camera omarchy-setup-security-face omarchy-remove-security-face omarchy-face-match)
 
 # The metadata lint test/cli applies to every bin/omarchy-* executable; hold
 # this overlay's commands to it here, where they are also tested on their own.
@@ -47,7 +47,9 @@ jq -e '.commands[] | select(.binary == "omarchy-setup-security-face" and .route 
   fail "the setup wizard routes as omarchy setup security face and asks for sudo" "$registry"
 jq -e '.commands[] | select(.binary == "omarchy-remove-security-face" and .route == "omarchy remove security face" and .requires_sudo == true)' <<<"$registry" >/dev/null ||
   fail "the removal wizard routes as omarchy remove security face and asks for sudo" "$registry"
-pass "the dispatcher resolves all three routes from the filenames"
+jq -e '.commands[] | select(.binary == "omarchy-face-match" and .route == "omarchy face match" and .hidden == true)' <<<"$registry" >/dev/null ||
+  fail "the pam_exec helper routes as omarchy face match and stays hidden like omarchy-hw-laptop-closed" "$registry"
+pass "the dispatcher resolves all four routes from the filenames"
 
 for route in "hw dell xps ir camera" "setup security face" "remove security face"; do
   # shellcheck disable=SC2086

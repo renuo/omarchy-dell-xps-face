@@ -6,7 +6,7 @@
 set -e
 
 lock_pam=/etc/pam.d/omarchy-lock-face
-face_marker='pam_howdy[.]so|howdy/pam[.]py'
+face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Resolve the invoking account before changing authentication or packages.
 if (( EUID == 0 )) && [[ -v SUDO_UID ]]; then
@@ -59,6 +59,8 @@ if omarchy-pkg-present howdy; then
   sudo howdy -U "$face_user" -y clear
 fi
 
+# pam-python is only on machines set up before the pam_exec helper; dropping it
+# takes its Python 2 along.
 echo "Removing face packages..."
 omarchy-pkg-drop howdy pam-python pamtester
 

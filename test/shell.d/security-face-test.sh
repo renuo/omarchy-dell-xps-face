@@ -20,7 +20,8 @@ copy="$test_tmp/setup.sh"
 mkdir -p "$stub_bin"
 
 gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-stable_module="pam_python.so $seclib/howdy/pam.py"
+stable_module="pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
+legacy_module="pam_python.so $seclib/howdy/pam.py"
 beta_module="pam_howdy.so"
 
 # The setup writes fixed root-owned paths. Retarget a scratch copy, and fail if
@@ -61,7 +62,7 @@ cat >"$stub_bin/pacman" <<'SH'
 #!/bin/bash
 [[ $* == "-Qlq howdy" ]] || exit 1
 case "$TEST_HOWDY_LAYOUT" in
-  stable) printf '%s\n' "$TEST_SECLIB/howdy/" "$TEST_SECLIB/howdy/cli.py" "$TEST_SECLIB/howdy/pam.py" "$TEST_SECLIB/howdy/config.ini" "/usr/bin/howdy" ;;
+  stable) printf '%s\n' "$TEST_SECLIB/howdy/" "$TEST_SECLIB/howdy/cli.py" "$TEST_SECLIB/howdy/pam.py" "$TEST_SECLIB/howdy/compare.py" "$TEST_SECLIB/howdy/config.ini" "/usr/bin/howdy" ;;
   beta) printf '%s\n' "$TEST_SECLIB/pam_howdy.so" "$TEST_ETC_HOWDY/" "$TEST_ETC_HOWDY/config.ini" "/usr/bin/howdy" ;;
   nomodule) printf '%s\n' "$TEST_SECLIB/howdy/config.ini" "/usr/bin/howdy" ;;
   noconfig) printf '%s\n' "$TEST_SECLIB/pam_howdy.so" "/usr/bin/howdy" ;;
@@ -230,7 +231,7 @@ expected_lock=$(printf '%s\n' '#%PAM-1.0' "auth       required                  
 grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the IR device" "$(cat "$seclib/howdy/config.ini")"
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
-grep -qx 'aur pam-python' "$log" || fail "the stable layout pulls in pam-python" "$(cat "$log")"
+! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
 (( $(log_line_of $'sudo\thowdy\tadd') < $(log_line_of $'sudo\ttee') )) || fail "enrollment precedes the lock PAM file" "$(cat "$log")"
 (( $(log_line_of $'sudo\ttee') < $(log_line_of $'sudo\tpamtester') )) || fail "the lock PAM file precedes verification" "$(cat "$log")"
 (( $(log_line_of $'sudo\tpamtester') < $(log_line_of $'sudo\tsed\t-i\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
@@ -261,6 +262,16 @@ invoke_setup ready stable || fail "setup succeeds over a gateless face line" "$(
 [[ $(sed -n 1p "$pamd/sudo") == "$gate" && $(sed -n 2p "$pamd/sudo") == "auth      sufficient $stable_module" ]] ||
   fail "the gate lands directly above the face module" "$(cat "$pamd/sudo")"
 pass "setup repairs a face line that lost its clamshell gate"
+
+reset_fixture
+printf '%s\n%s\n%s' "$gate" "auth      sufficient $legacy_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
+invoke_setup ready stable || fail "setup succeeds over a pam_python face line" "$(cat "$output")"
+[[ $(sed -n 1p "$pamd/sudo") == "$gate" && $(sed -n 2p "$pamd/sudo") == "auth      sufficient $stable_module" ]] ||
+  fail "the pam_python line is replaced in place under its gate" "$(cat "$pamd/sudo")"
+! grep -q 'pam_python' "$pamd/sudo" || fail "no pam_python line remains" "$(cat "$pamd/sudo")"
+(( $(grep -c -- 'omarchy-face-match' "$pamd/sudo") == 1 )) || fail "the face line is not duplicated" "$(cat "$pamd/sudo")"
+grep -q 'Replacing the pam_python glue' "$output" || fail "the replacement is announced" "$(cat "$output")"
+pass "setup replaces the pam_python glue of an earlier setup with the pam_exec helper"
 
 reset_fixture
 invoke_setup ready beta || fail "setup succeeds with the beta layout" "$(cat "$output"; cat "$log")"

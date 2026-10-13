@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# omarchy:summary=Match the PAM user's face with Howdy; the pam_exec.so helper behind the face PAM lines
+# omarchy:hidden=true
+
+# Howdy's own PAM glue is pam_python, which drags Python 2 along. All its
+# script does is run compare.py for the user and map the exit status, so
+# pam_exec.so does that through this helper instead: PAM_USER comes from
+# pam_exec, stdout goes to the PAM conversation, and the exit status carries
+# Howdy's verdict (0 match, 10 no model, 11 timeout, 12 abort, 13 too dark).
+
+set -u
+
+security_lib=/usr/lib/security
+compare="$security_lib/howdy/compare.py"
+user="${PAM_USER:-}"
+
+if [[ -z $user || $user == "." || $user == ".." || $user == */* || $user == *[[:space:]]* ]]; then
+  echo "omarchy-face-match: PAM_USER is missing or unsafe" >&2
+  exit 1
+fi
+
+if [[ ! -r $compare ]]; then
+  echo "omarchy-face-match: cannot read $compare; pam_exec needs the seteuid option" >&2
+  exit 1
+fi
+
+logger -p auth.info -t howdy "Attempting facial authentication for user $user"
+/usr/bin/python3 "$compare" "$user"
+status=$?
+
+case "$status" in
+  0)
+    echo "Identified face as $user"
+    logger -p auth.info -t howdy "Login approved for $user"
+    ;;
+  10)
+    echo "No face model known"
+    logger -p auth.notice -t howdy "Failure, no face model known for $user"
+    ;;
+  11)
+    echo "Face detection timeout reached"
+    logger -p auth.info -t howdy "Failure, timeout reached for $user"
+    ;;
+  12)
+    logger -p auth.info -t howdy "Failure, general abort for $user"
+    ;;
+  13)
+    echo "Face detection image too dark"
+    logger -p auth.info -t howdy "Failure, image too dark for $user"
+    ;;
+  *)
+    echo "Howdy failed with status $status"
+    logger -p auth.info -t howdy "Failure, unknown error $status for $user"
+    ;;
+esac
+
+exit "$status"

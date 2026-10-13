@@ -7,7 +7,9 @@ set -e
 
 security_lib=/usr/lib/security
 lock_pam=/etc/pam.d/omarchy-lock-face
-face_marker='pam_howdy[.]so|howdy/pam[.]py'
+face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
+# Setups before the pam_exec helper wired the stable release through pam_python.
+legacy_module='pam_python[.]so .*howdy/pam[.]py'
 
 # A clamshell gate runs before the face module in every stack: a shut lid covers
 # the camera, so it skips face (success=1) and PAM drops straight to the
@@ -17,16 +19,19 @@ face_marker='pam_howdy[.]so|howdy/pam[.]py'
 face_gate="auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
 
 # Howdy's package layout decides the PAM module: the beta ships a native
-# pam_howdy.so, the stable release a pam_python script. The package's own file
-# list answers this even though the stable install is readable by root only.
+# pam_howdy.so; the stable release ships a pam_python script, which needs
+# Python 2, so pam_exec runs omarchy-face-match around its compare.py instead
+# (seteuid keeps root for sudo and polkit, stdout feeds the prompt). The
+# package's own file list answers this even though the stable install is
+# readable by root only.
 face_module_line() {
   local files
 
   files=$(pacman -Qlq howdy) || return 1
   if grep -qxF -- "$security_lib/pam_howdy.so" <<<"$files"; then
     echo "pam_howdy.so"
-  elif grep -qxF -- "$security_lib/howdy/pam.py" <<<"$files"; then
-    echo "pam_python.so $security_lib/howdy/pam.py"
+  elif grep -qxF -- "$security_lib/howdy/compare.py" <<<"$files"; then
+    echo "pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
   else
     return 1
   fi
@@ -50,6 +55,10 @@ gate_precedes_face() {
 configure_stack() {
   local file=$1 label=$2
 
+  if grep -Eq -- "$legacy_module" "$file"; then
+    echo "Replacing the pam_python glue in $label with the pam_exec helper..."
+    sudo sed -i -E "s%^auth +sufficient +$legacy_module$%auth      sufficient $face_module%" "$file"
+  fi
   if ! grep -Eq -- "$face_marker" "$file"; then
     echo "Configuring $label for face authentication..."
     sudo sed -i "1i auth      sufficient $face_module" "$file"
@@ -129,10 +138,6 @@ omarchy-pkg-aur-add howdy pamtester
 if ! face_module=$(face_module_line); then
   echo -e "\e[31mHowdy installed no PAM module.\e[0m"
   exit 1
-fi
-
-if [[ $face_module == pam_python.so* ]]; then
-  omarchy-pkg-aur-add pam-python
 fi
 
 if ! howdy_config=$(howdy_config_file); then
