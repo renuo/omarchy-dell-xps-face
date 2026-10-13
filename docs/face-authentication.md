@@ -13,8 +13,8 @@ Omarchy's kernel (`linux-omarchy` 7.2) has no sensor driver, and its in-tree `ip
 | Layer | Owner | Status |
 | --- | --- | --- |
 | Hardware detection | `omarchy-hw-dell-xps-ir-camera` | Done, tested against sysfs fixtures |
-| Sensor driver and bridge entry | `hm1092-ir-camera` (`packaging/`): DKMS `hm1092` from jibsta210/svp7500-camera-fix-pack 1.0.5, DKMS `ipu-bridge-hm1092` for kernels before 7.3 | Packaged, not yet run on the hardware |
-| Grayscale relay for Howdy | `hm1092-ir-camera`: `hm1092-relay` publishes `HM1092 IR Camera` (v4l2loopback, GRAY8, `/dev/hm1092-ir`), hidden from PipeWire, and owns the flood LED | Packaged, unit-tested, not yet run on the hardware |
+| Sensor driver and bridge entry | `hm1092-ir-camera` (`packaging/`): DKMS `hm1092` from jibsta210/svp7500-camera-fix-pack 1.0.5, DKMS `ipu-bridge-hm1092` for kernels before 7.3 | Verified on the XPS 14 (2026-10-14, Linux 7.2.5): probes, binds on CSI-2 port 2 with one lane, streams |
+| Grayscale relay for Howdy | `hm1092-ir-camera`: `hm1092-relay` publishes `HM1092 IR Camera` (v4l2loopback, GRAY8, `/dev/hm1092-ir`), hidden from PipeWire, and owns the flood LED | Verified on the XPS 14: upright, well-lit 648x368 frames (stride 1344), LED lit only while a consumer reads |
 | Install on matching machines | `install/hardware/intel/ipu7-ir-camera.sh`, gated on the predicate | Done; needs the package in Omarchy's repository |
 | Face matching | Howdy from the AUR, pointed at that device | Done by the wizard |
 | sudo and polkit | `auth sufficient` behind the clamshell gate, like fingerprint | Done by the wizard |
@@ -42,7 +42,7 @@ Testing seams: `HM1092_SYS_ROOT` and `HM1092_DEV_ROOT` retarget sysfs and `/dev`
 
 ## Known gaps
 
-- Nothing in the driver package has run on the hardware yet. The first boot with it decides whether the fix pack's sensor module streams on the XPS 14 as it does on the XPS 16; meros/hm1092-linux is the fallback sensor module (clean, mainline-style, both ACPI ids, but no hardware flip, so `ROTATE180=1`).
+- The driver package has run on one XPS 14 so far (Linux 7.2.5, `intel-ipu7-camera` 1.0.6). If another machine's sensor fails to probe or stream, meros/hm1092-linux is the fallback sensor module (clean, mainline-style, both ACPI ids, but no hardware flip, so `ROTATE180=1`).
 - The AUR package `intel-ipu7-ir-dkms` wraps the same fix pack but also replaces `intel_cvs` and ships the fix pack's Howdy patch; on Omarchy it would collide with `intel-ipu7-camera`, which is why this package takes only the sensor module.
 - The relay device is readable by the active seat user through the default `uaccess` tag, like any camera. Frames cannot be injected because the relay holds the producer side, but reading it is a privacy question the lock-screen work should settle (a dedicated group, or root-only with a privileged helper).
 - The lock plugin only starts a `omarchy-lock-fingerprint` PAM context, gated on `fprintd-list`. A face context must be added to a clone of `omarchy.lock`, started on wake events rather than re-armed every 250 ms like fingerprint, so the camera and illuminator do not stream for the whole lock.
