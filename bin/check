@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # Lint and test the overlay: shellcheck when installed, then every shell test.
+# test/shell is upstream's runner, not shipped by bin/apply-to-checkout, so it
+# stays out of the lint.
 
 set -uo pipefail
 
@@ -9,7 +11,7 @@ status=0
 
 if command -v shellcheck >/dev/null; then
   shellcheck -x -e SC1090,SC1091 \
-    "$ROOT"/bin/* "$ROOT"/install/user/first-run/*.hook "$ROOT"/test/shell "$ROOT"/test/shell.d/*.sh || status=1
+    "$ROOT"/bin/* "$ROOT"/install/user/first-run/*.hook "$ROOT"/test/shell.d/*-test.sh || status=1
 else
   echo "shellcheck is not installed; run bin/setup to add it" >&2
   status=1

@@ -10,7 +10,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-SHELL_TEST_DIR="$ROOT/test/shell.d"
 
 export ROOT
 
