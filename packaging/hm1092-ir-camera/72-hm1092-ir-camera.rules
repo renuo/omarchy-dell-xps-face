@@ -1,0 +1,3 @@
+# The relay's loopback gets whatever video number is free at boot; its name is
+# fixed. Give Howdy and humans a stable path.
+SUBSYSTEM=="video4linux", ATTR{name}=="HM1092 IR Camera", SYMLINK+="hm1092-ir"

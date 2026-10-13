@@ -1,0 +1,34 @@
+post_install() {
+  systemctl daemon-reload
+  systemctl enable hm1092-relay.service
+  udevadm control --reload-rules 2>/dev/null || true
+  cat <<'MSG'
+
+  hm1092-ir-camera: DKMS builds the hm1092 sensor module, and on kernels before
+  7.3 an ipu-bridge that knows the sensor, when this transaction ends; check
+  with `dkms status`. Reboot before enrolling: ipu-bridge builds the camera
+  graph at boot and cannot be swapped live.
+
+  After the reboot, `omarchy hw dell xps ir camera --device` names the IR
+  device and `omarchy setup security face` can enroll.
+
+MSG
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+  systemctl enable hm1092-relay.service
+  udevadm control --reload-rules 2>/dev/null || true
+  echo "  hm1092-ir-camera: reboot to load the rebuilt modules."
+}
+
+pre_remove() {
+  systemctl disable --now hm1092-relay.service hm1092-camera-init.service 2>/dev/null || true
+  /usr/lib/hm1092-ir-camera/hm1092-ir-led off 2>/dev/null || true
+}
+
+post_remove() {
+  systemctl daemon-reload
+  udevadm control --reload-rules 2>/dev/null || true
+  echo "  hm1092-ir-camera: reboot to return to the in-tree ipu-bridge."
+}

@@ -1,0 +1,90 @@
+# Maintainer: Josua Schmid <josua.schmid@renuo.ch>
+#
+# The Himax HM1092 is the Windows Hello IR sensor Dell fits next to the IPU7 RGB
+# camera, and Linux has no driver for it yet. The sensor module comes from
+# jibsta210/svp7500-camera-fix-pack, which streams it on the Dell XPS 16, and
+# kernels before 7.3 get an ipu-bridge rebuilt with the sensor's ACPI id, the
+# same entry mainline 7.3 carries. The relay turns the raw stream into a
+# grayscale V4L2 device for Howdy and owns the IR flood LED. Developed in the
+# omarchy-dell-xps-face overlay for Omarchy; intel-ipu7-camera stays in charge
+# of the RGB camera and the bridge ownership handshake.
+
+pkgname=hm1092-ir-camera
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Himax HM1092 Windows Hello IR camera behind Intel IPU7: sensor driver, ipu-bridge entry and grayscale relay for face authentication"
+arch=('any')
+url="https://github.com/jibsta210/svp7500-camera-fix-pack"
+license=('GPL-2.0-only')
+depends=('dkms' 'intel-ipu7-camera' 'v4l2loopback-dkms' 'v4l2loopback-utils' 'v4l-utils' 'python' 'python-numpy')
+backup=('etc/hm1092-ir-camera.conf')
+install="$pkgname.install"
+
+_fixpack=svp7500-camera-fix-pack
+_fixpack_ver=1.0.5
+_bridge_kver=7.2.5
+
+source=(
+  "$_fixpack-$_fixpack_ver.tar.gz::https://github.com/jibsta210/$_fixpack/archive/refs/tags/v$_fixpack_ver.tar.gz"
+  "ipu-bridge-$_bridge_kver.c::https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/media/pci/intel/ipu-bridge.c?h=v$_bridge_kver"
+  ipu-bridge-hm1092.patch
+  hm1092.dkms.conf
+  hm1092.Makefile
+  ipu-bridge-hm1092.dkms.conf
+  ipu-bridge-hm1092.Makefile
+  hm1092-relay
+  hm1092-ir-led
+  hm1092-ir-led-sleep
+  hm1092-ir-camera.conf
+  hm1092-camera-init.service
+  hm1092-relay.service
+  hm1092-camera-deps.conf
+  72-hm1092-ir-camera.rules
+  hide-hm1092-ir-camera.conf
+)
+sha256sums=('d6cd5347b5a1b8a0f4ecf20445521a58b8b974e83cbfe83c611f593cc2322741'
+            '212f95ba5d3bf97d17d427b4528adf14568c146b00d926be7d8a989e5752b9fb'
+            '2bac8438a0b95ce3e3e2e52fe00bfcf86c12aa73af40040568db23612e92e32e'
+            '51b2efbe04c91496a396022c397f62113c8f8133b913c2829cbe526944631b73'
+            '1460992367acce1caa527c0cafed04e7aebc9fda37d5671095c35a7f5d7001a9'
+            '5dfaca77e85239ac8bab552c859aaa10d1557ddb1cecbf0af9139ba4c4814b3f'
+            '72b4bc1501d24ba794b10e4e457e9711c366b506efbd1d18cd7f2428158c7861'
+            'b3db84aac7081bd016a0176bfb852b735ad758a6ac958f4c28fa22badac67e9f'
+            'f54715398fbb7ff523c60be871e65f2f6f633f86f82b95d87e5a3b9a02b893bf'
+            '8599a60432e1d70edc20774f15429ae0c53f2d14bb43da7af6141602ba59e513'
+            '989a4269e83357173afdfdfe76cf19689ae31ed34817fc73c541b8d20f6583f3'
+            'e2747076a8882dcdea9c8595913dd92b536497d90c27612baf2f733ec036d002'
+            'e30cf9fc73ea7ea2c7d29fc03c6c19880b4bd15d9c3bd3425dac1beca7f94686'
+            '017d25743766611f6600984dcb6c5b18384fa00980e817d09761a261d511422f'
+            'cf04c50c2d7dbacb3374274b4350c41bf2d45f5a3fe4be1ae784a7fe5edddaaa'
+            'a1fc4f585d34708f150faa9407559b8433dbb17bbd6462f9c9678a49b8780b69')
+
+prepare() {
+  mkdir -p bridge
+  cp "ipu-bridge-$_bridge_kver.c" bridge/ipu-bridge.c
+  patch -d bridge -p1 -i "$srcdir/ipu-bridge-hm1092.patch"
+}
+
+package() {
+  local sensor="$srcdir/$_fixpack-$_fixpack_ver"
+
+  # DKMS trees; the directory suffix must equal PACKAGE_VERSION in dkms.conf.
+  install -Dm644 "$sensor/dkms/hm1092-1.0/hm1092.c" "$pkgdir/usr/src/hm1092-$pkgver/hm1092.c"
+  install -Dm644 hm1092.Makefile "$pkgdir/usr/src/hm1092-$pkgver/Makefile"
+  sed "s/@PKGVER@/$pkgver/" hm1092.dkms.conf >"$pkgdir/usr/src/hm1092-$pkgver/dkms.conf"
+
+  install -Dm644 bridge/ipu-bridge.c "$pkgdir/usr/src/ipu-bridge-hm1092-$pkgver/ipu-bridge.c"
+  install -Dm644 ipu-bridge-hm1092.Makefile "$pkgdir/usr/src/ipu-bridge-hm1092-$pkgver/Makefile"
+  sed "s/@PKGVER@/$pkgver/" ipu-bridge-hm1092.dkms.conf >"$pkgdir/usr/src/ipu-bridge-hm1092-$pkgver/dkms.conf"
+
+  install -Dm755 hm1092-relay hm1092-ir-led -t "$pkgdir/usr/lib/$pkgname/"
+  install -Dm755 hm1092-ir-led-sleep "$pkgdir/usr/lib/systemd/system-sleep/hm1092-ir-led"
+  install -Dm644 hm1092-camera-init.service hm1092-relay.service -t "$pkgdir/usr/lib/systemd/system/"
+  install -Dm644 hm1092-camera-deps.conf -t "$pkgdir/usr/lib/modprobe.d/"
+  # The bridge firmware wedges on USB autosuspend; the fix pack's rule keeps it on.
+  install -Dm644 72-hm1092-ir-camera.rules "$sensor/udev/99-svp7500-no-autosuspend.rules" \
+    -t "$pkgdir/usr/lib/udev/rules.d/"
+  install -Dm644 hide-hm1092-ir-camera.conf -t "$pkgdir/usr/share/wireplumber/wireplumber.conf.d/"
+  install -Dm644 hm1092-ir-camera.conf "$pkgdir/etc/hm1092-ir-camera.conf"
+  install -Dm644 "$sensor/IR-FINDINGS.md" "$pkgdir/usr/share/doc/$pkgname/IR-FINDINGS.md"
+}
