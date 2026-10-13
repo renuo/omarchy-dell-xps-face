@@ -40,7 +40,10 @@ cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
 printf 'hw %s\n' "$*" >>"$TEST_LOG"
 case "$TEST_HW:${1:-}" in
   nodriver:) exit 0 ;;
+  norelay:) exit 0 ;;
+  norelay:--driver) exit 0 ;;
   ready:) exit 0 ;;
+  ready:--driver) exit 0 ;;
   ready:--device) echo "$TEST_DEVICE" ;;
   *) exit 1 ;;
 esac
@@ -160,9 +163,17 @@ pass "setup stops before installing anything when no camera is detected"
 reset_fixture
 invoke_setup nodriver stable && fail "setup fails while the driver is missing"
 grep -q 'no usable driver' "$output" || fail "the missing driver is explained" "$(cat "$output")"
+grep -q 'hm1092-ir-camera' "$output" || fail "the driver package to install is named" "$(cat "$output")"
 assert_no_mutation "a missing driver configures nothing"
 ! grep -q '^aur' "$log" || fail "a missing driver installs nothing" "$(cat "$log")"
 pass "setup explains the missing driver and stops before installing anything"
+
+invoke_setup norelay stable && fail "setup fails while the relay publishes no device"
+grep -q 'relay publishes no device' "$output" || fail "the missing relay device is explained" "$(cat "$output")"
+grep -q 'hm1092-relay' "$output" || fail "the relay unit to check is named" "$(cat "$output")"
+assert_no_mutation "a missing relay device configures nothing"
+! grep -q '^aur' "$log" || fail "a missing relay device installs nothing" "$(cat "$log")"
+pass "setup explains the missing relay device and stops before installing anything"
 
 reset_fixture
 invoke_setup ready stable ok ok 0 "bogus device" && fail "setup rejects a malformed device path"

@@ -104,9 +104,15 @@ if ! omarchy-hw-dell-xps-ir-camera; then
   exit 1
 fi
 
-if ! face_device=$(omarchy-hw-dell-xps-ir-camera --device); then
+if ! omarchy-hw-dell-xps-ir-camera --driver; then
   echo -e "\e[31mThe IR camera has no usable driver yet.\e[0m"
-  echo "Install the HM1092 sensor driver and its grayscale relay first, then run this setup again."
+  echo "Install the hm1092-ir-camera package (omarchy pkg add hm1092-ir-camera), reboot, then run this setup again."
+  exit 1
+fi
+
+if ! face_device=$(omarchy-hw-dell-xps-ir-camera --device); then
+  echo -e "\e[31mThe IR camera driver is loaded, but its grayscale relay publishes no device.\e[0m"
+  echo "Check 'systemctl status hm1092-relay' and run this setup again once the HM1092 IR Camera device exists."
   exit 1
 fi
 
