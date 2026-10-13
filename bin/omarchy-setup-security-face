@@ -122,6 +122,8 @@ if [[ $face_device != /dev/video[0-9]* ]]; then
 fi
 
 echo "Installing required packages..."
+echo "Howdy and its dependencies are built from the AUR, which can take a long time;"
+echo "stay nearby, pacman asks for your password only after each build finishes."
 omarchy-pkg-aur-add howdy pamtester
 
 if ! face_module=$(face_module_line); then
