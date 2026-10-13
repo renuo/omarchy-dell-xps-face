@@ -48,7 +48,8 @@ Testing seams: `HM1092_SYS_ROOT` and `HM1092_DEV_ROOT` retarget sysfs and `/dev`
 - The lock plugin only starts a `omarchy-lock-fingerprint` PAM context, gated on `fprintd-list`. A face context must be added to a clone of `omarchy.lock`, started on wake events rather than re-armed every 250 ms like fingerprint, so the camera and illuminator do not stream for the whole lock.
 - Upstream's `omarchy-remove-security-fingerprint` deletes every `omarchy-hw-laptop-closed` line, including the face gate. Its sed should delete only the gate directly above `pam_fprintd.so`, the way the face removal does.
 - The lock-screen PAM conversation runs as the session user. Howdy's stable release keeps its tree root-only, so the lock plugin will need a privileged helper or the beta layout.
-- `pamtester`, `pam-python` and `howdy` are AUR packages; `python-dlib` builds for a while.
+- `pamtester`, `pam-python` and `howdy` are AUR packages; `python-dlib` builds for a while, and `pam-python` pulls in `python2`, built from source, because stable Howdy's PAM script is written for it. The beta's native `pam_howdy.so` would drop that.
+- Howdy opens the relay device through OpenCV, which reaches it via FFmpeg's video4linux input. FFmpeg prints `ioctl(VIDIOC_QBUF): Bad file descriptor` when Howdy releases the capture, because it returns the last frame buffer after closing the device. Harmless; the frames were already read.
 
 ## Exit plan
 
