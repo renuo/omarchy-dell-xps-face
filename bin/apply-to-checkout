@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run; do
+for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -24,11 +24,13 @@ done
 
 install -m 755 "$ROOT"/bin/omarchy-* "$checkout/bin/"
 for test in "$ROOT"/test/shell.d/*-test.sh; do
-  # Upstream owns the shared library; only this overlay's suites go across.
-  [[ ${test##*/} == "base-test.sh" ]] && continue
+  # Upstream owns the shared library, and the package suite tests packaging/,
+  # which stays in this overlay; only the checkout's own suites go across.
+  [[ ${test##*/} == "base-test.sh" || ${test##*/} == hm1092-ir-camera-package-test.sh ]] && continue
   install -m 644 "$test" "$checkout/test/shell.d/"
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
+install -m 644 "$ROOT"/install/hardware/intel/ipu7-ir-camera.sh "$checkout/install/hardware/intel/"
 install -D -m 644 "$ROOT/docs/face-authentication.md" "$checkout/docs/face-authentication.md"
 
 # Each menu row goes directly under its FIDO2 sibling, once. The overlay spells
@@ -57,4 +59,22 @@ while IFS= read -r line; do
   esac
 done <"$ROOT/default/omarchy/omarchy-menu.jsonc"
 
+# The IR leaf runs right after the RGB camera leaf it depends on, once.
+all_sh="$checkout/install/hardware/all.sh"
+# shellcheck disable=SC2016 # literal text for all.sh
+rgb_line='run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-camera.sh"'
+# shellcheck disable=SC2016
+ir_line='run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-ir-camera.sh"'
+if ! grep -qF -- "$ir_line" "$all_sh"; then
+  grep -qF -- "$rgb_line" "$all_sh" || {
+    echo "$all_sh has no ipu7-camera.sh line to insert after" >&2
+    exit 1
+  }
+  RGB="$rgb_line" IR="$ir_line" awk '
+    { print }
+    $0 == ENVIRON["RGB"] { print ENVIRON["IR"] }' "$all_sh" >"$all_sh.tmp"
+  mv "$all_sh.tmp" "$all_sh"
+fi
+
 echo "Applied to $checkout. Run ./test/shell there, then omarchy dev link $checkout."
+echo "The driver package itself lives in packaging/hm1092-ir-camera and is not part of the checkout."
