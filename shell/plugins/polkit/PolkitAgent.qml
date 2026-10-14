@@ -353,7 +353,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: root.errorFlash ? (root.scanning ? "No match" : "Wrong")
               : (root.submitted ? (root.scanning ? "Scanning face..." : "Checking...")
-              : (root.faceOffered ? "Enter scans your face, or type password" : "Enter password"))
+              : (root.faceOffered ? "Face or Password" : "Enter password"))
             color: root.errorFlash ? Commons.Color.polkit.textError : root.foreground
             opacity: root.errorFlash ? 1 : 0.36
             font.family: root.fontFamily

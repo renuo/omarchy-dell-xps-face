@@ -36,7 +36,7 @@ JS
 grep -q 'property bool faceConfigured: false' "$agent" || fail "the agent tracks face enrollment from the PAM stack"
 grep -q 'faceConfigured = PolkitModel.faceConfiguredFromPamConfig(raw)' "$agent" || fail "the agent reads face from the same PAM file as fingerprint"
 grep -q 'readonly property bool faceOffered: faceConfigured && !laptopClosed && dialogVisible && responseRequired' "$agent" || fail "face is offered only while PAM waits for the password with the lid open"
-grep -q '"Enter scans your face, or type password"' "$agent" || fail "the empty field says Enter scans the face"
+grep -q '"Face or Password"' "$agent" || fail "the empty field says Enter scans the face"
 grep -q '"Scanning face..."' "$agent" || fail "an empty submission reads as scanning"
 grep -q 'scanning = faceConfigured && passwordInput.text.length === 0' "$agent" || fail "only an empty answer counts as the consent"
 grep -q 'root.faceOffered || root.scanning ? "\\uf030" : "\\uf023"' "$agent" || fail "the padlock becomes a camera while face is offered or scanning"
