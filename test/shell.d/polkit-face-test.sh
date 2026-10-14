@@ -11,7 +11,7 @@ const polkit = requireFromRoot('shell/plugins/polkit/PolkitModel.js')
 
 const asking = `
 auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed
-auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint
+auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint
 auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match
 auth      include system-auth
 `
@@ -36,11 +36,33 @@ JS
 grep -q 'property bool faceConfigured: false' "$agent" || fail "the agent tracks face enrollment from the PAM stack"
 grep -q 'faceConfigured = PolkitModel.faceConfiguredFromPamConfig(raw)' "$agent" || fail "the agent reads face from the same PAM file as fingerprint"
 grep -q 'readonly property bool faceOffered: faceConfigured && !laptopClosed && dialogVisible && responseRequired' "$agent" || fail "face is offered only while PAM waits for the password with the lid open"
-grep -q '"Face or Password"' "$agent" || fail "the empty field says Enter scans the face"
-grep -q '"Scanning face..."' "$agent" || fail "an empty submission reads as scanning"
-grep -q 'scanning = faceConfigured && passwordInput.text.length === 0' "$agent" || fail "only an empty answer counts as the consent"
+grep -q '"Face or Password"' "$agent" || fail "the empty field offers the face"
+grep -q '"Scanning face..."' "$agent" || fail "a scan reads as scanning"
 grep -q 'root.faceOffered || root.scanning ? "\\uf030" : "\\uf023"' "$agent" || fail "the padlock becomes a camera while face is offered or scanning"
-pass "the polkit dialog offers the face scan with Enter and reports it while it runs"
+# Upstream's qml-text-format suite: a Text whose text is a binding says how to render it.
+grep -A1 -F 'root.faceOffered || root.scanning ? "\uf030" : "\uf023"' "$agent" | grep -q 'textFormat: Text.PlainText' ||
+  fail "the camera or padlock declares plain text, as every bound Text upstream does"
+pass "the polkit dialog offers the face and reports a scan while it runs"
+
+# function_has <name> <literal>: the QML function's body contains the literal.
+function_has() {
+  awk -v name="function $1(" -v literal="$2" '
+    index($0, name) { inside = 1 }
+    inside && index($0, literal) { found = 1 }
+    inside && /^  \}/ { exit }
+    END { exit !found }' "$agent"
+}
+
+# Enter submits what was typed, as upstream's dialog does; only the Copilot
+# key, handed over by Hyprland, answers with nothing to start a scan.
+function_has submitResponse 'scanning = false' || fail "a submitted field is a password, never the face"
+function_has scanFace 'if (!faceOffered || !flow || !flow.isResponseRequired) return "ignored"' || fail "the key acts only while the dialog offers the face"
+{ function_has scanFace 'passwordInput.text = ""' && function_has scanFace 'flow.submit("")'; } || fail "the key drops what was typed and answers with nothing"
+function_has scanFace 'scanning = true' || fail "the key's answer reads as a scan"
+grep -Pzo '(ShellIpc|IpcHandler) \{\s*target: "polkit"\s*function faceKey\(\): string \{\s*return root\.scanFace\(\)' "$agent" >/dev/null ||
+  fail "the dialog answers the key at the polkit IPC target"
+grep -qF '"omarchy-shell -q polkit faceKey"' "$ROOT/default/hypr/toggles/face-key.lua" || fail "Hyprland hands the key to that target"
+pass "the Copilot key, handed over by Hyprland, starts the scan; Enter submits only the password"
 
 qmllint=/usr/lib/qt6/bin/qmllint
 if [[ -x $qmllint ]]; then

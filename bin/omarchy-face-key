@@ -1,0 +1,535 @@
+#!/usr/bin/python3
+# omarchy:summary=Hold face scans until the Copilot key is pressed on a physical keyboard; the service behind omarchy-face-match
+# omarchy:args=<serve|wait|take|drop> [--pam-pid <pid>] [--user <name>] [--detach] [--tty] [--lock]
+# omarchy:hidden=true
+"""The face key behind omarchy-face-match.
+
+A camera sees a face whether or not its owner meant to approve anything, so a
+scan needs a deliberate act no program can fake, the way a finger on a reader
+is. That act is the Copilot key, read here by root straight from the
+keyboard's evdev node: programs running as the user can neither read that node
+nor, without /dev/uinput, fake it, and keyboards made through uinput live
+under /devices/virtual, which this ignores. Hyprland binds the key
+(default/hypr/toggles/face-key.lua), so no window receives it and it cannot
+end up in a password.
+
+serve  the root service behind the socket, socket-activated; it reads the
+       keyboard only while a prompt waits for the key
+wait   register a prompt that offers the face, and wait for the key
+take   whether the key was pressed for this prompt; consumes the press
+drop   the prompt was answered with a password; forget it
+
+One press serves exactly one waiting prompt. When more than one waits, the
+press serves none: a program waiting at the same moment must not catch a
+press meant for another prompt. They all keep waiting, the user is told who
+asked, and only typing a password or cancelling ends the standoff.
+"""
+
+import argparse
+import fcntl
+import os
+import pwd
+import re
+import select
+import selectors
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import termios
+import time
+
+SOCKET_PATH = "/run/omarchy-face-key.sock"
+INPUT_DIR = "/dev/input"
+INPUT_SYSFS = "/sys/class/input"
+FACE_CONF = "/etc/omarchy/face.conf"
+SETPRIV = "/usr/bin/setpriv"
+NOTIFY = "/usr/bin/omarchy-notification-send"
+
+# The Copilot key arrives as Super+Shift+F23; F23 alone marks it.
+KEY_F23 = 193
+EV_KEY = 1
+KEY_DOWN = 1
+EVENT = struct.Struct("llHHi")
+
+PRESS_VALID_S = 5
+IDLE_EXIT_S = 30
+DEFAULT_WINDOW_MINUTES = 60
+
+# The lock screen matches these lines (shell/plugins/lock/FaceModel.js).
+REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
+
+
+def log(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+def has_key(words, code):
+    """The kernel prints a capability bitmap as longs, most significant first."""
+    bits = struct.calcsize("l") * 8
+    index = len(words) - 1 - code // bits
+    return index >= 0 and (int(words[index], 16) >> (code % bits)) & 1 == 1
+
+
+def physical_copilot_keyboard(name):
+    device = os.path.join(INPUT_SYSFS, name, "device")
+    if "/devices/virtual/" in os.path.realpath(device):
+        return False
+    try:
+        with open(os.path.join(device, "capabilities", "key")) as f:
+            return has_key(f.read().split(), KEY_F23)
+    except (OSError, ValueError):
+        return False
+
+
+def peer_uid(conn):
+    _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    return uid
+
+
+def clean(text, limit=100):
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+class Server:
+    def __init__(self, listener):
+        self.selector = selectors.DefaultSelector()
+        self.listener = listener
+        self.listener.setblocking(False)
+        self.selector.register(listener, selectors.EVENT_READ, ("listener", None))
+        self.keyboards = {}
+        self.buffers = {}
+        self.waiters = {}
+        self.pressed = {}
+        self.children = []
+        self.last_activity = time.monotonic()
+
+    def run(self):
+        while True:
+            for key, _ in self.selector.select(timeout=1.0):
+                kind, data = key.data
+                if kind == "listener":
+                    self.accept()
+                elif kind == "client":
+                    self.read_client(key.fileobj)
+                else:
+                    self.read_keyboard(data)
+            self.children = [child for child in self.children if child.poll() is None]
+            now = time.monotonic()
+            self.pressed = {pid: at for pid, at in self.pressed.items() if now - at <= PRESS_VALID_S}
+            if self.buffers or self.waiters or self.pressed:
+                self.last_activity = now
+            elif now - self.last_activity > IDLE_EXIT_S:
+                return
+
+    def accept(self):
+        try:
+            conn, _ = self.listener.accept()
+        except BlockingIOError:
+            return
+        if peer_uid(conn) != os.geteuid():
+            conn.close()
+            return
+        conn.setblocking(False)
+        self.buffers[conn] = b""
+        self.selector.register(conn, selectors.EVENT_READ, ("client", None))
+
+    def read_client(self, conn):
+        if conn not in self.buffers:
+            return
+        try:
+            data = conn.recv(4096)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data:
+            self.close(conn)
+            return
+        if conn in self.waiters:
+            return
+        self.buffers[conn] += data
+        if b"\n" not in self.buffers[conn]:
+            if len(self.buffers[conn]) > 4096:
+                self.close(conn)
+            return
+        line = self.buffers[conn].split(b"\n", 1)[0].decode(errors="replace")
+        self.handle(conn, line.split("\t"))
+
+    def handle(self, conn, fields):
+        command = fields[0]
+        if command == "WAIT" and len(fields) == 4:
+            # A conversation asking again, like sudo after a wrong password,
+            # replaces its earlier prompt rather than competing with it.
+            self.drop_waiters(fields[1])
+            self.waiters[conn] = (fields[1], fields[2], fields[3])
+            log(f"{fields[3]} waits for the key")
+            self.open_keyboards()
+            self.send(conn, "WAITING")
+        elif command == "TAKE" and len(fields) == 2:
+            at = self.pressed.pop(fields[1], None)
+            self.drop_waiters(fields[1])
+            fresh = at is not None and time.monotonic() - at <= PRESS_VALID_S
+            self.send(conn, "YES" if fresh else "NO")
+            self.close(conn)
+        elif command == "DROP" and len(fields) == 2:
+            self.pressed.pop(fields[1], None)
+            self.drop_waiters(fields[1])
+            self.send(conn, "OK")
+            self.close(conn)
+        else:
+            self.close(conn)
+
+    def drop_waiters(self, pam_id):
+        for conn, (waiter_id, _, _) in list(self.waiters.items()):
+            if waiter_id == pam_id:
+                self.close(conn)
+
+    def send(self, conn, message):
+        try:
+            conn.sendall((message + "\n").encode())
+        except OSError:
+            pass
+
+    def close(self, conn):
+        self.buffers.pop(conn, None)
+        self.waiters.pop(conn, None)
+        try:
+            self.selector.unregister(conn)
+        except (KeyError, ValueError):
+            pass
+        conn.close()
+        if not self.waiters:
+            self.close_keyboards()
+
+    def open_keyboards(self):
+        try:
+            names = sorted(n for n in os.listdir(INPUT_DIR) if n.startswith("event"))
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(INPUT_DIR, name)
+            if path in self.keyboards or not physical_copilot_keyboard(name):
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            except OSError:
+                continue
+            self.keyboards[path] = fd
+            self.selector.register(fd, selectors.EVENT_READ, ("keyboard", path))
+
+    def close_keyboards(self):
+        for path in list(self.keyboards):
+            self.forget_keyboard(path)
+
+    def forget_keyboard(self, path):
+        fd = self.keyboards.pop(path)
+        self.selector.unregister(fd)
+        os.close(fd)
+
+    def read_keyboard(self, path):
+        if path not in self.keyboards:
+            return
+        try:
+            data = os.read(self.keyboards[path], EVENT.size * 64)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data:
+            self.forget_keyboard(path)
+            return
+        for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
+            _, _, kind, code, value = EVENT.unpack_from(data, offset)
+            if kind == EV_KEY and code == KEY_F23 and value == KEY_DOWN:
+                self.key_pressed()
+
+    def key_pressed(self):
+        waiting = list(self.waiters.items())
+        if len(waiting) == 1:
+            conn, (pam_id, _, description) = waiting[0]
+            log(f"key pressed for {description}")
+            self.pressed[pam_id] = time.monotonic()
+            self.send(conn, "KEY")
+            self.close(conn)
+        elif waiting:
+            descriptions = [description for _, (_, _, description) in waiting]
+            log("key refused, several prompts wait: " + "; ".join(descriptions))
+            for conn, (_, _, mine) in waiting:
+                others = list(descriptions)
+                others.remove(mine)
+                self.send(conn, "\t".join(["CONFLICT"] + others))
+            self.notify(waiting)
+
+    def notify(self, waiting):
+        for user in sorted({user for _, (_, user, _) in waiting}):
+            try:
+                account = pwd.getpwnam(user)
+            except KeyError:
+                continue
+            lines = "\n".join("• " + description for _, (_, _, description) in waiting)
+            body = f"{len(waiting)} programs waited for the Copilot key at once, so none got your face:\n{lines}\nType your password, or cancel what you did not start."
+            runtime = f"/run/user/{account.pw_uid}"
+            env = {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": account.pw_dir,
+                "USER": user,
+                "LOGNAME": user,
+                "XDG_RUNTIME_DIR": runtime,
+                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
+            }
+            command = [SETPRIV, f"--reuid={account.pw_uid}", f"--regid={account.pw_gid}", "--init-groups",
+                       NOTIFY, "-u", "critical", "-g", "", "Face scan refused", body]
+            try:
+                self.children.append(subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            except OSError as error:
+                log(f"could not notify {user}: {error}")
+
+
+def listening_socket():
+    if os.environ.get("LISTEN_PID") == str(os.getpid()) and os.environ.get("LISTEN_FDS") == "1":
+        return socket.socket(fileno=3)
+    try:
+        os.unlink(SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    umask = os.umask(0o077)
+    try:
+        listener.bind(SOCKET_PATH)
+    finally:
+        os.umask(umask)
+    listener.listen(16)
+    return listener
+
+
+def proc_stat(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return f.read().rsplit(")", 1)[1].split()
+
+
+def pam_id(pid):
+    """The PAM conversation's process, told apart from a later one reusing its pid."""
+    return f"{pid}:{proc_stat(pid)[19]}"
+
+
+def comm(pid):
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def describe(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        argv = []
+    if argv and os.path.basename(argv[0]) == "polkit-agent-helper-1":
+        return "a polkit dialog"
+    text = clean(" ".join(argv) or comm(pid) or str(pid), 80)
+    parent = comm(proc_stat(pid)[1])
+    return clean(f"{text} (from {parent})" if parent else text)
+
+
+def beyond_sudo(pid):
+    """The lock's helper runs under sudo; the conversation is whoever ran sudo."""
+    while pid > 1 and comm(pid) == "sudo":
+        pid = int(proc_stat(pid)[1])
+    return pid
+
+
+def window_seconds():
+    minutes = DEFAULT_WINDOW_MINUTES
+    try:
+        with open(FACE_CONF) as f:
+            for line in f:
+                match = re.fullmatch(r'\s*([A-Z_]+)=("?)([^"]*)\2\s*', line.rstrip("\n"))
+                if match and match.group(1) == "LOCK_WINDOW_MINUTES":
+                    value = match.group(3)
+                    minutes = int(value) if re.fullmatch(r"[1-9][0-9]{0,5}", value) else DEFAULT_WINDOW_MINUTES
+    except OSError:
+        pass
+    return minutes * 60
+
+
+class Lines:
+    def __init__(self, conn):
+        self.conn = conn
+        self.buffer = b""
+
+    def pending(self):
+        return b"\n" in self.buffer
+
+    def next(self):
+        """The next line, reading as needed; "" once the service hangs up."""
+        while b"\n" not in self.buffer:
+            data = self.conn.recv(4096)
+            if not data:
+                return ""
+            self.buffer += data
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return line.decode(errors="replace")
+
+
+def connect():
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+    conn.settimeout(5)
+    conn.connect(SOCKET_PATH)
+    return conn
+
+
+def request(line):
+    with connect() as conn:
+        conn.sendall((line + "\n").encode())
+        return Lines(conn).next()
+
+
+def conversation_tty(pid):
+    """The terminal the conversation reads its answer from, None without one.
+
+    pam_exec runs its command in a session of its own, where /dev/tty is
+    nobody's, so this finds the conversation's controlling terminal instead.
+    """
+    number = int(proc_stat(pid)[4])
+    if number == 0:
+        return None
+    for directory in ("/dev/pts", "/dev"):
+        for name in sorted(os.listdir(directory)):
+            path = os.path.join(directory, name)
+            if directory == "/dev" and not name.startswith("tty"):
+                continue
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            if stat.S_ISCHR(info.st_mode) and info.st_rdev == number:
+                return path
+    raise OSError(f"no node for the terminal of process {pid}")
+
+
+def clear_and_submit(tty):
+    """Answer the prompt reading this terminal with nothing, dropping what was typed."""
+    kill = termios.tcgetattr(tty)[6][termios.VKILL]
+    for byte in (b"" if kill == b"\0" else kill) + b"\n":
+        fcntl.ioctl(tty, termios.TIOCSTI, bytes([byte]))
+
+
+def watch_process(pid):
+    try:
+        return os.pidfd_open(pid)
+    except OSError:
+        return None
+
+
+def wait(args):
+    if not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]*", args.user):
+        log("omarchy-face-key: unsafe user name")
+        return 1
+    pam_pid = beyond_sudo(args.pam_pid) if args.lock else args.pam_pid
+    tty_path = conversation_tty(pam_pid) if args.tty else None
+    tty = os.open(tty_path, os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC) if tty_path else None
+    deadline = time.clock_gettime(time.CLOCK_BOOTTIME) + window_seconds() if args.lock else None
+    watched = watch_process(pam_pid)
+    conn = connect()
+    conn.sendall(f"WAIT\t{pam_id(pam_pid)}\t{args.user}\t{describe(pam_pid)}\n".encode())
+    lines = Lines(conn)
+    if lines.next() != "WAITING":
+        return 1
+    conn.settimeout(None)
+
+    if args.detach:
+        if os.fork() > 0:
+            os._exit(0)
+        null = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(null, fd)
+
+    poller = select.poll()
+    poller.register(conn, select.POLLIN)
+    if watched is not None:
+        poller.register(watched, select.POLLIN)
+    if args.lock and stat.S_ISFIFO(os.fstat(1).st_mode):
+        poller.register(1, 0)
+
+    while True:
+        if not lines.pending():
+            timeout = 1.0
+            if deadline is not None:
+                left = deadline - time.clock_gettime(time.CLOCK_BOOTTIME)
+                if left <= 0:
+                    return 2
+                timeout = min(timeout, left)
+            if watched is None and not os.path.exists(f"/proc/{pam_pid}"):
+                return 1
+            ready = [fd for fd, _ in poller.poll(timeout * 1000)]
+            if any(fd != conn.fileno() for fd in ready):
+                return 1
+            if not ready:
+                continue
+        fields = lines.next().split("\t")
+        if fields[0] == "KEY":
+            if deadline is not None and time.clock_gettime(time.CLOCK_BOOTTIME) >= deadline:
+                return 2
+            if tty is not None:
+                clear_and_submit(tty)
+            return 0
+        if fields[0] == "CONFLICT":
+            if tty is not None:
+                os.write(tty, f"\r\n{REFUSED_MESSAGE}: {', '.join(fields[1:])}\r\n".encode())
+            if args.lock:
+                print(REFUSED_MESSAGE, flush=True)
+        elif fields[0] != "WAITING":
+            return 1
+
+
+def take(args):
+    try:
+        return 0 if request(f"TAKE\t{pam_id(args.pam_pid)}") == "YES" else 1
+    except OSError:
+        return 1
+
+
+def drop(args):
+    try:
+        request(f"DROP\t{pam_id(args.pam_pid)}")
+    except OSError:
+        pass
+    return 0
+
+
+def serve(_args):
+    Server(listening_socket()).run()
+    return 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="omarchy-face-key")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("serve").set_defaults(run=serve)
+    waiting = commands.add_parser("wait")
+    waiting.add_argument("--pam-pid", type=int, required=True)
+    waiting.add_argument("--user", required=True)
+    waiting.add_argument("--detach", action="store_true")
+    waiting.add_argument("--tty", action="store_true")
+    waiting.add_argument("--lock", action="store_true")
+    waiting.set_defaults(run=wait)
+    for name, run in (("take", take), ("drop", drop)):
+        command = commands.add_parser(name)
+        command.add_argument("--pam-pid", type=int, required=True)
+        command.set_defaults(run=run)
+    args = parser.parse_args(argv)
+    try:
+        return args.run(args)
+    except (OSError, IndexError, ValueError) as error:
+        log(f"omarchy-face-key: {error}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

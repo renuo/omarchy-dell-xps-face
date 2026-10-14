@@ -1,6 +1,6 @@
 # omarchy-dell-xps-face
 
-Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092): sudo, polkit and the lock screen unlock with a face, always behind a deliberate Enter, never on presence alone. Developed as an overlay in upstream's layout so it can be sent upstream as one change.
+Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092): sudo, polkit and the lock screen unlock with a face, always behind a press of the Copilot key, never on presence alone. Developed as an overlay in upstream's layout so it can be sent upstream as one change.
 
 ```
 git clone https://github.com/renuo/omarchy-dell-xps-face
@@ -9,28 +9,30 @@ git clone https://github.com/renuo/omarchy-dell-xps-face
 ## What it adds
 
 - `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, with `--driver` and `--device` for the layers a face setup needs.
-- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo and polkit, the lock screen, or both, whichever the setup is told, mirroring the fingerprint wizard. sudo and polkit ask first: Enter on the empty password prompt scans, a typed password skips the camera.
+- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo and polkit, the lock screen, or both, whichever the setup is told, mirroring the fingerprint wizard. Wherever a password is asked, the Copilot key scans instead, and a typed password skips the camera.
+- `omarchy-face-key`, a socket-activated root service that reads the Copilot key from the keyboard itself, so no program can fake the press the way it could fake an Enter, and `default/hypr/toggles/face-key.lua`, which takes the key from the Omarchy menu and from every window. One press serves one waiting prompt; when two wait, neither gets it and a notification names both.
 - `omarchy-face-match`, the hidden `pam_exec` helper behind those PAM lines, with `etc/sudoers.d/omarchy-face-match` so the lock screen's user-level PAM can reach Howdy's root-only tree.
-- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", Enter scans, "Scanning face…" and "No match" report what happened. A lock offers the face for one scan within an hour of locking, both set in `/etc/omarchy/face.conf`; past either the camera hint goes and the field says "Password (face failed)" or "Password (face expired)".
+- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", the Copilot key scans, "Scanning face…" and "No match" report what happened. A lock offers the face for one scan within an hour of locking, both set in `/etc/omarchy/face.conf`; past either the camera hint goes and the field says "Password (face failed)" or "Password (face expired)".
 - `packaging/hm1092-ir-camera`: the driver package the wizard needs. The sensor module and the bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
 
 `docs/face-authentication.md` has the layers, contracts, known gaps and the exit plan for when mainline Linux catches up.
 
 ## Status
 
-Verified on a Dell XPS 14 DA14260 on Omarchy 4.0.4 (Linux 7.2.5): the sensor streams, Howdy enrolls, and sudo, polkit and the lock screen unlock by face with the consent step. Not yet upstreamed; the package is not in Omarchy's repository yet.
+Verified on a Dell XPS 14 DA14260 on Omarchy 4.0.4 (Linux 7.2.5): the sensor streams, Howdy enrolls, and sudo, polkit and the lock screen unlock by face with Enter as the consent step. The Copilot key that replaces it is tested against fake keyboards and awaits its trial. Not yet upstreamed; the package is not in Omarchy's repository yet.
 
 ## Layout
 
 ```
 bin/omarchy-*                      the commands, as they land in upstream bin/
 default/omarchy/omarchy-menu.jsonc the two menu rows (also usable as a user menu extension)
+default/hypr/toggles/face-key.lua  the Hyprland binding that makes the Copilot key the face key
 etc/sudoers.d/                     the grant the lock screen's face helper runs through
 install/hardware/intel/            the hardware leaf that installs the driver package
 install/user/first-run/            the first-run invitation hook
 packaging/hm1092-ir-camera/        PKGBUILD, DKMS sources, relay, units, udev and WirePlumber rules
 shell/plugins/lock/                upstream's lock plugin with the face context added
-shell/plugins/polkit/              upstream's polkit agent, offering the face scan on Enter
+shell/plugins/polkit/              upstream's polkit agent, scanning the face on the Copilot key
 test/shell, test/shell.d/          upstream's runner and assertion protocol, with this overlay's suites
 docs/                              design notes
 bin/check, bin/setup, bin/run      lint and test, install dev deps, probe this machine
@@ -62,9 +64,9 @@ sudo /usr/lib/hm1092-ir-camera/hm1092-relay --probe   # otherwise: what resolved
 Then the helper, its grant, and the enrollment:
 
 ```
-sudo install -m 755 bin/omarchy-face-match /usr/bin/omarchy-face-match
+sudo install -m 755 bin/omarchy-face-match bin/omarchy-face-key /usr/bin/
 sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/ && sudo visudo -c
-PATH="$PWD/bin:$PATH" omarchy-setup-security-face
+OMARCHY_PATH="$PWD" PATH="$PWD/bin:$PATH" omarchy-setup-security-face   # OMARCHY_PATH: the toggle comes from here
 ```
 
 Then the shell plugins, generated against the installed version so they match it:

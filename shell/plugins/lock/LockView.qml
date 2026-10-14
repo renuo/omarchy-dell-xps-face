@@ -56,8 +56,6 @@ Item {
   readonly property bool feedActive: root.video && root.loadBackground && !root.displaysBlank && !root.powerSaverActive
 
   signal submitPassword(string password)
-  // Enter on the empty field: the consent to scan the face.
-  signal faceScanRequested()
   signal passwordTextEdited(string password)
   signal clearFailureRequested()
   signal wakeRequested()
@@ -213,7 +211,6 @@ Item {
           var submitted = root.passwordText
           root.passwordTextEdited("")
           if (submitted.length > 0) root.submitPassword(submitted)
-          else root.faceScanRequested()
         }
 
         Keys.onPressed: function(event) {
@@ -249,8 +246,8 @@ Item {
       // A reader the shell cannot reach crosses out rather than disappears, so
       // it stops inviting touches that can never unlock.
       // Face hint pinned inside the field's left edge while the lock offers
-      // the face; it brightens while a scan runs. Enter on the empty field
-      // starts one, so the placeholder says "Face or Password". Once the lock's
+      // the face; it brightens while a scan runs. The Copilot key starts one,
+      // so the placeholder says "Face or Password". Once the lock's
       // scans are spent or its window has closed, the hint goes and the
       // placeholder says why only the password is left.
       Text {

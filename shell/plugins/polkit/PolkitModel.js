@@ -18,8 +18,8 @@ function fingerprintConfiguredFromPamConfig(raw) {
 }
 
 // Face authentication is offered only in the form that asks first: the helper
-// with expose_authtok, where an empty answer to the password prompt is the
-// consent to scan. A face line without it would scan unasked, and the dialog
+// with expose_authtok, which scans only when the Copilot key answered the
+// password prompt. A face line without it would scan unasked, and the dialog
 // must not invite that.
 function faceConfiguredFromPamConfig(raw) {
   var lines = String(raw || "").split("\n")

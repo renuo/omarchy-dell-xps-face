@@ -29,36 +29,48 @@ fi
 security_lib=/usr/lib/security
 compare="$security_lib/howdy/compare.py"
 lock_pam=/etc/pam.d/omarchy-lock-face
+face_key=/usr/bin/omarchy-face-key
 # The path etc/sudoers.d/omarchy-face-match names; the privileged half always
 # runs from there, never from whichever copy pam_exec invoked.
 PACKAGED_PATH=/usr/bin/omarchy-face-match
 
+valid_account() {
+  [[ -n $1 && $1 != "." && $1 != ".." && $1 != */* && $1 != *[[:space:]]* ]]
+}
+
 # Presence is not consent: a camera sees a face whether or not its owner meant
-# to approve anything. The hint line in sudo's and polkit's stacks says so
-# before pam_exec shows the usual password prompt with expose_authtok, and the
-# answer arrives here on stdin: an empty line is the go-ahead, anything typed
-# is a password meant for pam_unix, which gets it through try_first_pass, so
-# the camera stays dark and nothing is echoed or logged.
+# to approve anything. A scan waits for the Copilot key, which only root reads
+# from the keyboard itself (omarchy-face-key). In sudo's and polkit's stacks
+# the hint line registers the prompt with the key service before pam_exec shows
+# the usual password prompt with expose_authtok, and the answer arrives here on
+# stdin: the key answers with an empty line, which counts only when the service
+# saw the key for this very prompt; anything typed is a password meant for
+# pam_unix, which gets it through try_first_pass, so the camera stays dark and
+# nothing is echoed or logged.
 if [[ $# == 1 && $1 == --hint ]]; then
-  echo "Press Enter to confirm with your face, or type your password."
+  if (( EUID == 0 )) && valid_account "${PAM_USER:-}" &&
+    "$face_key" wait --pam-pid "$PPID" --user "$PAM_USER" --detach --tty 2>/dev/null; then
+    echo "Press the Copilot key to use your face, or type your password."
+  fi
   exit 0
 fi
 
-if (( $# != 0 )); then
+# The setup's check asks for the face alone, with no password prompt for the
+# key to answer, so the helper waits for the key itself.
+face_only=0
+if [[ $# == 1 && $1 == --wait ]]; then
+  if ! { (( EUID == 0 )) && valid_account "${PAM_USER:-}"; }; then
+    echo "omarchy-face-match: --wait serves root's PAM stacks only" >&2
+    exit 1
+  fi
+  face_only=1
+elif (( $# != 0 )); then
   echo "omarchy-face-match takes no arguments; pam_exec provides PAM_USER" >&2
   exit 1
 fi
 
-if [[ ! -t 0 ]]; then
-  response=$(cat)
-  if [[ -n $response ]]; then
-    unset response
-    exit 1
-  fi
-fi
-
 user="${PAM_USER:-${SUDO_USER:-}}"
-if [[ -z $user || $user == "." || $user == ".." || $user == */* || $user == *[[:space:]]* ]]; then
+if ! valid_account "$user"; then
   echo "omarchy-face-match: no account to match" >&2
   exit 1
 fi
@@ -85,6 +97,25 @@ if [[ ! -r $compare ]]; then
   exec sudo -n "$PACKAGED_PATH"
 fi
 
+if (( face_only )); then
+  "$face_key" wait --pam-pid "$PPID" --user "$user" || exit 1
+elif [[ -n ${PAM_USER:-} ]]; then
+  response=""
+  [[ -t 0 ]] || response=$(cat)
+  if [[ -n $response ]]; then
+    unset response
+    "$face_key" drop --pam-pid "$PPID" 2>/dev/null
+    exit 1
+  fi
+  "$face_key" take --pam-pid "$PPID" 2>/dev/null || exit 1
+else
+  # The lock screen keeps this waiting while it offers the face; the key
+  # service ends the wait when the lock's window since locking closes.
+  "$face_key" wait --lock --pam-pid "$PPID" --user "$user" || exit 1
+fi
+
+# The lock screen follows the scan by this line (shell/plugins/lock/FaceModel.js).
+echo "Scanning face…"
 logger -p auth.info -t howdy "Attempting facial authentication for user $user"
 /usr/bin/python3 "$compare" "$user"
 status=$?

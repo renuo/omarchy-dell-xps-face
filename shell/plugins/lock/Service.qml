@@ -216,6 +216,7 @@ Item {
     fingerprintReachTimer.stop()
     if (passwordPam.active) passwordPam.abort()
     if (fingerprintPam.active) fingerprintPam.abort()
+    faceRearmTimer.stop()
     settleFaceAttempt()
     faceAttempts = 0
   }
@@ -270,7 +271,7 @@ Item {
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
     nudgeFingerprint()
-    refreshFaceWindow()
+    syncFace()
   }
 
   // User activity advances retries without recreating a busy retry loop.
@@ -325,7 +326,11 @@ Item {
     root.displaysBlank = true
     root.monitorDpmsKnown = false
     if (!blankProcess.running) blankProcess.running = true
-    settleFaceAttempt("face-aborted: blank")
+    // The check keeps waiting in the dark; a scan running into the blank stops.
+    if (faceAuthenticating) {
+      settleFaceAttempt("face-aborted: blank")
+      syncFace()
+    }
   }
 
   function screenBlank(screenName) {
@@ -451,30 +456,45 @@ Item {
     armFingerprintRetry(FingerprintModel.retryDelayMs(fingerprintUnreachedStreak))
   }
 
-  // The face scans only on an explicit Enter in the empty password field, the
-  // same consent as the empty answer sudo and polkit take. Nothing scans on
-  // lock, wake or a timer, so the camera and its invisible flood LED stay off
-  // until asked. Howdy's own timeout ends an attempt; faceAbortTimer bounds a
-  // conversation that never completes. Every started scan spends one of the
-  // lock's attempts, and the window since locking is read afresh, since the
-  // display may have been dark when it closed.
-  function startFace() {
-    if (!lockRequested || !sessionLock.secure) return
-    if (facePam.active || faceAuthenticating || authenticatingPassword) return
+  // The lock keeps a face check waiting while it offers the face; root scans
+  // once the Copilot key is pressed (omarchy-face-key), and the helper's
+  // "Scanning face…" line tells the lock that a scan started. Every scan
+  // spends one of the lock's attempts. The window since locking is read
+  // afresh whenever the offer is checked or a scan starts, since the display
+  // may have been dark, or the machine asleep, when it closed.
+  function syncFace() {
     refreshFaceWindow()
-    if (currentFaceState() !== "offered") return
+    if (faceAuthenticating) return
+    if (currentFaceState() === "offered") armFace()
+    else if (facePam.active) settleFaceAttempt("face-withdrawn: " + (currentFaceState() || "unconfigured"))
+  }
 
-    failureMessage = ""
-    faceAuthenticating = true
+  function armFace() {
+    if (!lockRequested || !sessionLock.secure || facePam.active) return
     if (!facePam.start()) {
-      faceAuthenticating = false
-      failureMessage = "Face unavailable"
       logEvent("face-start-failed")
       return
     }
-    faceAttempts += 1
-    faceAbortTimer.restart()
-    logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
+    logEvent("face-armed")
+  }
+
+  function noteFaceMessage(message) {
+    if (message === FaceModel.SCAN_MESSAGE) {
+      refreshFaceWindow()
+      if (currentFaceState() !== "offered") {
+        settleFaceAttempt("face-aborted: " + currentFaceState())
+        return
+      }
+      faceAuthenticating = true
+      faceAttempts += 1
+      failureMessage = ""
+      faceAbortTimer.restart()
+      logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
+      if (displaysBlank) runWake()
+    } else if (message === FaceModel.REFUSED_MESSAGE) {
+      failureMessage = "Face refused"
+      logEvent("face-refused: another prompt waits for the key")
+    }
   }
 
   function currentFaceState() {
@@ -487,34 +507,43 @@ Item {
 
   function applyFacePolicy(text) {
     facePolicy = FaceModel.parsePolicy(text)
-    refreshFaceWindow()
+    syncFace()
   }
 
-  // abort() gives no completion signal; settle the attempt here.
+  // abort() gives no completion signal; settle the check here.
   function settleFaceAttempt(event, message) {
     faceAbortTimer.stop()
     if (facePam.active) facePam.abort()
-    if (!faceAuthenticating) return
+    var scanning = faceAuthenticating
     faceAuthenticating = false
     if (event) logEvent(event)
-    if (message && lockRequested) failureMessage = message
+    if (scanning && message && lockRequested) failureMessage = message
   }
 
+  // A check that ends without a scan (its window closed, or the key service
+  // was unavailable) is no attempt; the next sync arms it again if it may.
   function handleFaceFinished(result) {
     faceAbortTimer.stop()
-    if (!faceAuthenticating) return
+    var scanned = faceAuthenticating
     faceAuthenticating = false
     if (!lockRequested) return
+    if (!scanned) {
+      logEvent("face-check-ended")
+      return
+    }
     if (result === PamResult.Success) {
       logEvent("face-matched")
       finishUnlock()
-    } else if (result === PamResult.Error) {
+      return
+    }
+    if (result === PamResult.Error) {
       logEvent("face-error")
       failureMessage = "Face unavailable"
     } else {
       logEvent("face-no-match")
       failureMessage = "No match"
     }
+    faceRearmTimer.restart()
   }
 
   function handleFingerprintFinished(result) {
@@ -540,6 +569,7 @@ Item {
         sessionLockStabilizeTimer.stop()
         pendingSessionLockTimer.stop()
         root.startFingerprint()
+        root.syncFace()
       }
     }
 
@@ -586,7 +616,6 @@ Item {
         passwordText: root.enteredPassword
         onPasswordTextEdited: function(password) { root.enteredPassword = password }
         onSubmitPassword: function(password) { root.submitPassword(password) }
-        onFaceScanRequested: root.startFace()
         onClearFailureRequested: root.failureMessage = ""
         onWakeRequested: root.runWake()
       }
@@ -674,6 +703,8 @@ Item {
     config: "omarchy-lock-face"
     user: root.userName
 
+    onPamMessage: root.noteFaceMessage(message)
+
     onCompleted: function(result) {
       root.handleFaceFinished(result)
     }
@@ -714,7 +745,26 @@ Item {
     id: faceAbortTimer
     interval: FaceModel.ATTEMPT_TIMEOUT_MS
     repeat: false
-    onTriggered: root.settleFaceAttempt("face-timeout", "Face unavailable")
+    onTriggered: {
+      root.settleFaceAttempt("face-timeout", "Face unavailable")
+      root.syncFace()
+    }
+  }
+
+  Timer {
+    id: faceRearmTimer
+    interval: FaceModel.REARM_DELAY_MS
+    repeat: false
+    onTriggered: root.syncFace()
+  }
+
+  // Closes the offer when the window since locking runs out while the display
+  // stays on, and retries a check that could not start.
+  Timer {
+    interval: 30000
+    repeat: true
+    running: root.lockRequested && root.faceConfigured
+    onTriggered: root.syncFace()
   }
 
   Timer {
@@ -932,6 +982,8 @@ Item {
     else armBlankTimer()
   }
 
+  onFaceConfiguredChanged: syncFace()
+
   // The face setup writes this file only after a verified enrollment, and only
   // when the face is wanted on the lock screen; the removal deletes it, so its
   // presence is the signal.
@@ -1006,6 +1058,7 @@ Item {
         face: root.faceConfigured,
         faceState: root.faceState,
         faceAttempts: root.faceAttempts,
+        faceArmed: facePam.active,
         faceAuthenticating: root.faceAuthenticating,
         fingerprintUnavailable: root.fingerprintUnavailable,
         authenticating: root.authenticating,

@@ -9,15 +9,20 @@ security_lib=/usr/lib/security
 lock_pam=/etc/pam.d/omarchy-lock-face
 verify_pam=/etc/pam.d/omarchy-face-verify
 face_conf=/etc/omarchy/face.conf
+face_key=/usr/bin/omarchy-face-key
+key_socket=/etc/systemd/system/omarchy-face-key.socket
+key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Presence is not consent: a camera sees a face whether or not its owner meant
-# to approve anything, unlike a finger placed on a reader. So the stable
-# layout asks first. A hint line explains, then expose_authtok on the module
-# line shows the usual password prompt: Enter on an empty line is the consent
-# that starts the scan, a typed password skips the camera and reaches pam_unix
-# through try_first_pass, and sudo -n or a script can never trigger a scan.
-face_hint="auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint"
+# to approve anything, unlike a finger placed on a reader. So a scan waits for
+# the Copilot key, read by root from the keyboard itself (omarchy-face-key).
+# The hint line registers the prompt with the key service and names the key
+# (seteuid: only root reaches the service), then expose_authtok on the module
+# line shows the usual password prompt: the key answers it and starts the
+# scan, a typed password skips the camera and reaches pam_unix through
+# try_first_pass, and sudo -n or a script can never trigger a scan.
+face_hint="auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint"
 
 # A clamshell gate runs before the face lines in every stack: a shut lid covers
 # the camera, so it skips them (success=N) and PAM drops straight to the
@@ -28,26 +33,19 @@ face_gate_skipping() {
   echo "auth      [success=$1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
 }
 
-# Howdy's package layout decides the PAM module: the beta ships a native
-# pam_howdy.so, which scans as soon as it runs; the stable release ships a
-# pam_python script, which needs Python 2, so pam_exec runs omarchy-face-match
-# around its compare.py instead (seteuid keeps root for sudo and polkit, stdout
-# feeds the prompt). This is the lock screen's line, which scans without
-# asking: the lock cannot answer a prompt, so it takes the consent in its view,
-# Enter on the empty field.
-# The package's own file list answers this even though the stable install is
-# readable by root only.
+# Howdy's stable release ships a pam_python script, which needs Python 2, so
+# pam_exec runs omarchy-face-match around its compare.py instead (seteuid keeps
+# root for sudo and polkit, stdout feeds the prompt). This is the lock screen's
+# line, which never asks: the lock keeps it waiting for the key. The beta's
+# native pam_howdy.so scans the moment PAM reaches it and cannot wait for the
+# key, so only compare.py serves. The package's own file list answers this
+# even though the install is readable by root only.
 face_module_line() {
   local files
 
   files=$(pacman -Qlq howdy) || return 1
-  if grep -qxF -- "$security_lib/pam_howdy.so" <<<"$files"; then
-    echo "pam_howdy.so"
-  elif grep -qxF -- "$security_lib/howdy/compare.py" <<<"$files"; then
-    echo "pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
-  else
-    return 1
-  fi
+  grep -qxF -- "$security_lib/howdy/compare.py" <<<"$files" || return 1
+  echo "pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
 }
 
 howdy_config_file() {
@@ -58,18 +56,16 @@ howdy_config_file() {
     grep -m1 -xF -- "$security_lib/howdy/config.ini" <<<"$files"
 }
 
+face_asking_line() {
+  echo "${face_module%% /usr/bin/*} expose_authtok /usr/bin/omarchy-face-match"
+}
+
 # The lines sudo and polkit carry for face authentication, in order: the gate,
-# then for the helper the hint and the module asking first (expose_authtok),
-# for the beta's native module just the module.
+# the hint and the module asking first.
 face_block() {
-  if [[ $face_module == pam_exec.so* ]]; then
-    face_gate_skipping 2
-    echo "$face_hint"
-    echo "auth      sufficient ${face_module%% /usr/bin/*} expose_authtok /usr/bin/omarchy-face-match"
-  else
-    face_gate_skipping 1
-    echo "auth      sufficient $face_module"
-  fi
+  face_gate_skipping 2
+  echo "$face_hint"
+  echo "auth      sufficient $(face_asking_line)"
 }
 
 # True when the file carries the block exactly: contiguous and in order. The
@@ -172,18 +168,67 @@ remove_lock_face_pam() {
   fi
 }
 
-# Verify through PAM before touching any stack, the way they will run it.
-# Enrollment only proves Howdy saw a face, not that the module can match it
-# from a PAM stack. The service lives for this check alone, so a lock screen
-# the user left out never offers the face, not even for a moment.
+# The root service that reads the Copilot key, socket-activated so it runs
+# only while a prompt offers the face, and the Hyprland binding that keeps the
+# key from every window and hands it to the polkit dialog.
+setup_face_key() {
+  echo "Setting up the Copilot key for face scans..."
+  sudo tee "$key_socket" >/dev/null <<'EOF'
+[Unit]
+Description=Omarchy face key: hold face scans until the Copilot key is pressed
+
+[Socket]
+ListenStream=/run/omarchy-face-key.sock
+SocketMode=0600
+SocketUser=root
+SocketGroup=root
+
+[Install]
+WantedBy=sockets.target
+EOF
+  sudo tee "$key_service" >/dev/null <<'EOF'
+[Unit]
+Description=Omarchy face key: hold face scans until the Copilot key is pressed
+Requires=omarchy-face-key.socket
+
+[Service]
+ExecStart=/usr/bin/omarchy-face-key serve
+DevicePolicy=closed
+DeviceAllow=char-input r
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+EOF
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now omarchy-face-key.socket
+  omarchy-hyprland-toggle face-key on
+}
+
+# Verify through PAM before touching any stack: the helper waits for the
+# Copilot key and scans, with no password prompt, since only the face is under
+# test. Enrollment only proves Howdy saw a face, not that the module can match
+# it from a PAM stack. The service lives for this check alone, so a lock
+# screen the user left out never offers the face, not even for a moment.
 verify_face() {
   local status=0
 
-  # omarchy:heredoc-expands paths=none -- $face_module is the PAM module line
-  # taken from Howdy's package file list, never from the caller.
+  # omarchy:heredoc-expands paths=none -- the module line is the fixed
+  # /usr/bin helper line built from Howdy's package file list, never from the
+  # caller.
   sudo tee "$verify_pam" >/dev/null <<EOF
 #%PAM-1.0
-auth       required                    $face_module
+auth       required                    $face_module --wait
 EOF
   sudo pamtester "${verify_pam##*/}" "$USER" authenticate || status=$?
   sudo rm -f "$verify_pam"
@@ -236,6 +281,11 @@ if [[ $face_device != /dev/video[0-9]* ]]; then
   exit 1
 fi
 
+if [[ ! -x $face_key ]]; then
+  echo -e "\e[31m$face_key is missing; update Omarchy and run this setup again.\e[0m"
+  exit 1
+fi
+
 # Ask before the long AUR builds, so nothing waits on an answer afterwards.
 scope_all="sudo, polkit and lock screen"
 scope_auth="sudo and polkit only"
@@ -253,7 +303,7 @@ echo "stay nearby, pacman asks for your password only after each build finishes.
 omarchy-pkg-aur-add howdy pamtester
 
 if ! face_module=$(face_module_line); then
-  echo -e "\e[31mHowdy installed no PAM module.\e[0m"
+  echo -e "\e[31mHowdy installed no compare.py, which the Copilot key needs: a native PAM module scans without waiting for it.\e[0m"
   exit 1
 fi
 
@@ -280,7 +330,9 @@ fi
 
 echo -e "\e[32m\nFace model added successfully!\e[0m"
 
-echo -e "\nNow let's verify that it's working correctly. Look into the camera again.\n"
+setup_face_key
+
+echo -e "\nNow let's verify that it's working correctly. Look into the camera and press the Copilot key.\n"
 
 if ! verify_face; then
   echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
@@ -302,10 +354,11 @@ fi
 setup_face_conf
 
 echo -e "\e[32m\nPerfect! Face authentication is now configured.\e[0m"
+echo "Press the Copilot key at a password prompt to use your face instead; it no longer opens the Omarchy menu."
 if (( use_auth )); then
-  echo "sudo and polkit: press Enter on the empty password prompt to use your face."
+  echo "sudo and polkit: the key works while they ask for your password."
 fi
 if (( use_lock )); then
-  echo "Lock screen (Super + Ctrl + L): press Enter on the empty field to use your face."
+  echo "Lock screen (Super + Ctrl + L): the key works while the field says \"Face or Password\"."
   echo "How many scans a lock allows, and for how long after locking, is set in $face_conf."
 fi

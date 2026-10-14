@@ -8,6 +8,8 @@ set -e
 lock_pam=/etc/pam.d/omarchy-lock-face
 verify_pam=/etc/pam.d/omarchy-face-verify
 face_conf=/etc/omarchy/face.conf
+key_socket=/etc/systemd/system/omarchy-face-key.socket
+key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Resolve the invoking account before changing authentication or packages.
@@ -51,6 +53,23 @@ remove_file() {
   fi
 }
 
+# The Copilot key service goes once no stack offers the face, and the key
+# returns to the Omarchy menu.
+remove_face_key() {
+  if [[ -f $key_socket || -f $key_service ]]; then
+    echo "Removing the Copilot key service..."
+    sudo systemctl disable --now omarchy-face-key.socket
+    sudo systemctl stop omarchy-face-key.service
+    sudo rm -f "$key_socket"
+    sudo rm -f "$key_service"
+    sudo systemctl daemon-reload
+  fi
+  if omarchy-hyprland-toggle-enabled face-key; then
+    echo "Giving the Copilot key back to the Omarchy menu..."
+    omarchy-hyprland-toggle face-key off
+  fi
+}
+
 
 echo -e "\e[32mRemoving face authentication.\n\e[0m"
 
@@ -59,6 +78,7 @@ remove_face_lines /etc/pam.d/polkit-1 polkit
 remove_file "$lock_pam" "lock screen face authentication"
 remove_file "$verify_pam" "the face verification service an interrupted setup left"
 remove_file "$face_conf" "the lock screen's face limits"
+remove_face_key
 
 # The face models are untracked package data, so clear them while Howdy's CLI
 # is still there to do it; a failure here must not leave them behind.

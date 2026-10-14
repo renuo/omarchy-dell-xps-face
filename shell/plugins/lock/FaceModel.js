@@ -1,10 +1,22 @@
-// The face scans only when the user presses Enter in the empty password
-// field, never on lock, wake or a timer: the IR camera and its invisible
-// flood LED must not run without that consent.
+// The face scans only after the Copilot key, which root reads from the
+// keyboard itself (omarchy-face-key); the lock merely keeps a face check
+// waiting for it while it offers the face. Nothing scans on lock, wake or a
+// timer alone: the IR camera and its invisible flood LED must not run
+// without that consent.
 
-// Howdy gives up after its own timeout (4 s by default); this bounds an
-// attempt whose PAM conversation never completes.
+// Howdy gives up after its own timeout (4 s by default); this bounds a scan
+// whose PAM conversation never completes.
 var ATTEMPT_TIMEOUT_MS = 15000
+
+// After a scan that failed, the next check waits this long, so the failure
+// stays readable and a failing helper cannot spin.
+var REARM_DELAY_MS = 1500
+
+// Lines on the face check's conversation: omarchy-face-match prints the first
+// when the key starts a scan, omarchy-face-key the second when another
+// program waited for the key at the same time.
+var SCAN_MESSAGE = "Scanning face…"
+var REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
 
 // A lock offers the face for a few scans and for a while after it was taken;
 // past either, only the password opens it. /etc/omarchy/face.conf sets both,
@@ -52,6 +64,9 @@ function placeholderText(state, fallback) {
 if (typeof module !== "undefined") {
   module.exports = {
     ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
+    REARM_DELAY_MS: REARM_DELAY_MS,
+    SCAN_MESSAGE: SCAN_MESSAGE,
+    REFUSED_MESSAGE: REFUSED_MESSAGE,
     DEFAULT_ATTEMPTS: DEFAULT_ATTEMPTS,
     DEFAULT_WINDOW_MINUTES: DEFAULT_WINDOW_MINUTES,
     parsePolicy: parsePolicy,

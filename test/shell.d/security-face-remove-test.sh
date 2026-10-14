@@ -11,6 +11,7 @@ trap 'rm -rf "$test_tmp"' EXIT
 stub_bin="$test_tmp/bin"
 pamd="$test_tmp/etc/pam.d"
 omarchy_etc="$test_tmp/etc/omarchy"
+units="$test_tmp/etc/systemd/system"
 log="$test_tmp/calls.log"
 output="$test_tmp/output"
 copy="$test_tmp/remove.sh"
@@ -18,17 +19,19 @@ mkdir -p "$stub_bin"
 
 gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 face_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-hint_line='auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint'
+hint_line='auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint'
 stable_line='auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match'
 legacy_line='auth      sufficient pam_python.so /usr/lib/security/howdy/pam.py'
 beta_line='auth      sufficient pam_howdy.so'
 fingerprint_line='auth      sufficient pam_fprintd.so'
 includes=$(printf '%s\n' $'auth\t\tinclude\t\tsystem-auth' $'account\t\tinclude\t\tsystem-auth')
 
-for literal in 'lock_pam=/etc/pam.d/omarchy-lock-face' 'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf'; do
+for literal in 'lock_pam=/etc/pam.d/omarchy-lock-face' 'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' \
+  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service'; do
   (( $(grep -Fxc "$literal" "$remove") == 1 )) || fail "removal names $literal exactly once"
 done
-sed -e "s|/etc/pam.d/|$pamd/|g" -e "s|/etc/omarchy/|$omarchy_etc/|g" -e "s|/usr/bin/id|$test_tmp/trusted-id|g" "$remove" >"$copy"
+sed -e "s|/etc/pam.d/|$pamd/|g" -e "s|/etc/omarchy/|$omarchy_etc/|g" -e "s|/etc/systemd/system/|$units/|g" \
+  -e "s|/usr/bin/id|$test_tmp/trusted-id|g" "$remove" >"$copy"
 pass "removal names its fixed paths, and the test drives a retargeted copy"
 
 cat >"$test_tmp/trusted-id" <<'SH'
@@ -59,10 +62,17 @@ case "${1:-}" in
     ;;
   rm)
     case "$*" in
-      "rm -f $TEST_PAMD/omarchy-lock-face" | "rm -f $TEST_PAMD/omarchy-face-verify" | "rm -f $TEST_OMARCHY_ETC/face.conf") ;;
+      "rm -f $TEST_PAMD/omarchy-lock-face" | "rm -f $TEST_PAMD/omarchy-face-verify" | "rm -f $TEST_OMARCHY_ETC/face.conf" | \
+        "rm -f $TEST_UNITS/omarchy-face-key.socket" | "rm -f $TEST_UNITS/omarchy-face-key.service") ;;
       *) reject "$@" ;;
     esac
     exec /usr/bin/rm -f "$3"
+    ;;
+  systemctl)
+    case "$*" in
+      "systemctl disable --now omarchy-face-key.socket" | "systemctl stop omarchy-face-key.service" | "systemctl daemon-reload") ;;
+      *) reject "$@" ;;
+    esac
     ;;
   howdy)
     [[ $* == "howdy -U $TEST_ID_NAME -y clear" ]] || reject "$@"
@@ -84,6 +94,17 @@ cat >"$stub_bin/omarchy-pkg-drop" <<'SH'
 printf 'package %s\n' "$*" >>"$TEST_LOG"
 SH
 
+cat >"$stub_bin/omarchy-hyprland-toggle-enabled" <<'SH'
+#!/bin/bash
+[[ $* == "face-key" && -f $TEST_TOGGLE ]]
+SH
+
+cat >"$stub_bin/omarchy-hyprland-toggle" <<'SH'
+#!/bin/bash
+printf 'toggle %s\n' "$*" >>"$TEST_LOG"
+[[ $* == "face-key off" ]] && rm -f "$TEST_TOGGLE"
+SH
+
 chmod +x "$stub_bin"/* "$test_tmp/trusted-id"
 
 write_stack() {
@@ -94,15 +115,16 @@ write_stack() {
 
 reset_fixture() {
   : >"$log"
-  rm -rf "$pamd" "$omarchy_etc"
-  mkdir -p "$pamd" "$omarchy_etc"
+  rm -rf "$pamd" "$omarchy_etc" "$units" "$test_tmp/toggle"
+  mkdir -p "$pamd" "$omarchy_etc" "$units"
 }
 
 # invoke_remove [user] [howdy-present] [clear-fail]
 invoke_remove() {
   local status=0
 
-  TEST_LOG="$log" TEST_PAMD="$pamd" TEST_OMARCHY_ETC="$omarchy_etc" TEST_ID_NAME="${1-alice}" TEST_HOWDY_PRESENT="${2:-1}" \
+  TEST_LOG="$log" TEST_PAMD="$pamd" TEST_OMARCHY_ETC="$omarchy_etc" TEST_UNITS="$units" TEST_TOGGLE="$test_tmp/toggle" \
+    TEST_ID_NAME="${1-alice}" TEST_HOWDY_PRESENT="${2:-1}" \
     TEST_CLEAR_FAIL="${3:-0}" USER=spoofed SUDO_USER=spoofed \
     PATH="$stub_bin:/usr/bin:/bin" env -u SUDO_UID bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
@@ -118,6 +140,9 @@ write_stack polkit-1 "$face_gate" "$hint_line" "$stable_line" "$includes"
 printf 'auth required pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match\n' >"$pamd/omarchy-lock-face"
 cp "$pamd/omarchy-lock-face" "$pamd/omarchy-face-verify"
 printf 'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60\n' >"$omarchy_etc/face.conf"
+: >"$units/omarchy-face-key.socket"
+: >"$units/omarchy-face-key.service"
+: >"$test_tmp/toggle"
 invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output"; cat "$log")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
   fail "sudo keeps the fingerprint pair and loses only the face pair" "$(cat "$pamd/sudo")"
@@ -129,7 +154,15 @@ invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output
 (( $(log_line_of $'sudo\thowdy') < $(log_line_of 'package ') )) || fail "models are cleared before the package drop" "$(cat "$log")"
 [[ $(tail -n 1 "$log") == 'package howdy pam-python pamtester' ]] || fail "the face packages drop last" "$(cat "$log")"
 grep -Fq "alice's local face models have been removed" "$output" || fail "success names the user" "$(cat "$output")"
-pass "removal strips the face pair from sudo and polkit, clears the models and drops the packages"
+[[ ! -e $units/omarchy-face-key.socket && ! -e $units/omarchy-face-key.service ]] || fail "the key service's units are removed"
+(( $(log_line_of $'sudo\tsed') < $(log_line_of $'sudo\tsystemctl\tdisable\t--now\tomarchy-face-key.socket') )) ||
+  fail "no stack offers the face by the time its key service stops" "$(cat "$log")"
+(( $(log_line_of $'sudo\tsystemctl\tstop\tomarchy-face-key.service') < $(log_line_of $'sudo\trm\t-f\t'"$units/omarchy-face-key.socket") )) ||
+  fail "the key service stops before its units go" "$(cat "$log")"
+(( $(log_line_of $'sudo\trm\t-f\t'"$units/omarchy-face-key.service") < $(log_line_of $'sudo\tsystemctl\tdaemon-reload') )) ||
+  fail "systemd forgets the units once they are gone" "$(cat "$log")"
+grep -qx 'toggle face-key off' "$log" || fail "the Copilot key returns to the Omarchy menu" "$(cat "$log")"
+pass "removal strips the face pair from sudo and polkit, stops the key service, clears the models and drops the packages"
 
 reset_fixture
 write_stack sudo "$face_gate" "$hint_line" "$stable_line" "$includes"
@@ -181,6 +214,7 @@ reset_fixture
 write_stack sudo "$includes"
 invoke_remove alice 0 || fail "removal succeeds when nothing is configured" "$(cat "$output")"
 ! grep -q '^sudo' "$log" || fail "nothing configured runs no privileged command" "$(cat "$log")"
+! grep -q '^toggle' "$log" || fail "a Copilot key that was never taken stays with the menu" "$(cat "$log")"
 grep -q '^package howdy' "$log" || fail "the package drop still runs" "$(cat "$log")"
 pass "removal is idempotent when face authentication was never set up"
 

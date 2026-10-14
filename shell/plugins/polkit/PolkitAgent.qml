@@ -51,8 +51,8 @@ Item {
   // gate skips pam_fprintd — we switch to the password field instead.
   readonly property bool fingerprintMode: fingerprintConfigured && !laptopClosed && dialogVisible && !responseRequired && !submitted && !errorFlash
   // Face is offered while PAM waits for the password and the lid is open:
-  // Enter on the empty field consents to the scan, typing takes the password
-  // path. The PAM stack itself enforces this; the dialog only says so.
+  // the Copilot key starts the scan, typing takes the password path. The
+  // PAM stack itself enforces this; the dialog only says so.
   readonly property bool faceOffered: faceConfigured && !laptopClosed && dialogVisible && responseRequired && !submitted && !errorFlash
   readonly property int cardHeight: panel.height > 0 ? Math.min(fieldHeight + contentMargin * 2, panel.height - Style.gapsOut * 2) : fieldHeight + contentMargin * 2
   // Password mode is a wide field; fingerprint mode collapses to a square that
@@ -120,12 +120,36 @@ Item {
   function submitResponse() {
     var flow = polkitAgent.flow
     if (!flow || !flow.isResponseRequired) return
-    scanning = faceConfigured && passwordInput.text.length === 0
+    scanning = false
     submitted = true
     errorFlash = false
     flow.submit(passwordInput.text)
     passwordInput.text = ""
     keyCatcher.forceActiveFocus()
+  }
+
+  // The Copilot key, which Hyprland hands to the shell instead of any window
+  // (default/hypr/toggles/face-key.lua). The dialog answers the password
+  // prompt with nothing; root scans only if omarchy-face-key saw the key on
+  // the keyboard itself, so a forged call is merely an empty password.
+  function scanFace() {
+    var flow = polkitAgent.flow
+    if (!faceOffered || !flow || !flow.isResponseRequired) return "ignored"
+    passwordInput.text = ""
+    scanning = true
+    submitted = true
+    errorFlash = false
+    flow.submit("")
+    keyCatcher.forceActiveFocus()
+    return "scanning"
+  }
+
+  ShellIpc {
+    target: "polkit"
+
+    function faceKey(): string {
+      return root.scanFace()
+    }
   }
 
   function cancelRequest() {
@@ -308,6 +332,7 @@ Item {
 
         Text {
           text: root.faceOffered || root.scanning ? "\uf030" : "\uf023"
+          textFormat: Text.PlainText
           color: root.errorFlash ? Commons.Color.polkit.textError : root.accent
           font.family: root.fontFamily
           font.pixelSize: Style.font.iconLarge

@@ -9,8 +9,16 @@ service="$lock/Service.qml"
 view="$lock/LockView.qml"
 
 run_node_test <<'JS'
+const fs = require('fs')
 const model = requireFromRoot('shell/plugins/lock/FaceModel.js')
 assert(model.ATTEMPT_TIMEOUT_MS > 4000 * 2, "the abort bound leaves Howdy's own 4-second timeout room to report")
+assert(model.REARM_DELAY_MS >= 1000, 'a failed scan stays readable before the next check waits for the key')
+
+// The lock follows the scan by the lines the helper and the key service print.
+const helper = fs.readFileSync(path.join(root, 'bin/omarchy-face-match'), 'utf8')
+const key = fs.readFileSync(path.join(root, 'bin/omarchy-face-key'), 'utf8')
+assert(helper.includes(`echo "${model.SCAN_MESSAGE}"`), 'the helper announces a scan with the line the lock waits for')
+assert(key.includes(`REFUSED_MESSAGE = "${model.REFUSED_MESSAGE}"`), 'the key service refuses with the line the lock recognises')
 
 const hour = 60 * 60 * 1000
 assertDeepEqual(model.parsePolicy(''), { attempts: 1, windowMs: hour }, 'without a policy file a lock allows one scan within an hour of locking')
@@ -47,26 +55,6 @@ for (const [state, text] of Object.entries(placeholders)) {
 }
 JS
 
-# The face context mirrors the fingerprint one structurally, but it starts from
-# exactly one place: Enter in the empty password field. No lock, wake or timer
-# may start a scan.
-grep -q 'id: facePam' "$service" || fail "the service has a face PAM context"
-grep -q 'config: "omarchy-lock-face"' "$service" || fail "the face context uses the omarchy-lock-face service"
-grep -q 'path: "/etc/pam.d/omarchy-lock-face"' "$service" || fail "enrollment is read from the lock PAM file the setup writes"
-(( $(grep -c 'root.startFace()' "$service") == 1 )) || fail "exactly one caller starts a face attempt"
-grep -q 'onFaceScanRequested: root.startFace()' "$service" || fail "that caller is the view's scan request"
-! awk '/function runWake\(\) \{/{f=1} f && /startFace/{found=1} f && /^  \}/{exit} END{exit !found}' "$service" || fail "a wake event starts no scan"
-! grep -q 'onTriggered: root.startFace' "$service" || fail "no timer starts a scan"
-awk '/function runBlank\(\) \{/{f=1} f && /settleFaceAttempt/{found=1} f && /^  \}/{exit} END{exit !found}' "$service" || fail "blanking the display aborts a running attempt"
-grep -q 'interval: FaceModel.ATTEMPT_TIMEOUT_MS' "$service" || fail "an attempt is bounded by the model's timeout"
-grep -q 'failureMessage = "No match"' "$service" || fail "a miss is reported in the field"
-grep -q 'face: root.faceConfigured' "$service" || fail "the lock status reports face enrollment"
-grep -q 'signal faceScanRequested()' "$view" || fail "the view has a scan request signal"
-grep -q 'else root.faceScanRequested()' "$view" || fail "Enter on the empty field requests the scan"
-grep -q '"Scanning face…"' "$view" || fail "a running scan is shown in the field"
-{ grep -q 'id: faceIcon' "$view" && grep -q 'Math.max(root.fingerprintReserve, root.faceReserve)' "$view"; } || fail "the view shows a face hint and keeps the dots clear of it"
-pass "the lock scans only on Enter in the empty field and says so"
-
 # function_has <name> <literal>: the QML function's body contains the literal.
 function_has() {
   awk -v name="function $1(" -v literal="$2" '
@@ -76,18 +64,53 @@ function_has() {
     END { exit !found }' "$service"
 }
 
+# The face context mirrors the fingerprint one structurally: it waits while the
+# lock offers the face, and root scans once the Copilot key is pressed. The
+# lock itself never starts a scan, and the password field has nothing to do
+# with the face any more.
+grep -q 'id: facePam' "$service" || fail "the service has a face PAM context"
+grep -q 'config: "omarchy-lock-face"' "$service" || fail "the face context uses the omarchy-lock-face service"
+grep -q 'path: "/etc/pam.d/omarchy-lock-face"' "$service" || fail "enrollment is read from the lock PAM file the setup writes"
+{ (( $(grep -c 'facePam.start()' "$service") == 1 )) && function_has armFace 'facePam.start()'; } || fail "only armFace starts the face check"
+{ (( $(grep -c 'armFace()' "$service") == 2 )) && function_has syncFace 'armFace()'; } || fail "only syncFace arms it, and only while the lock offers the face"
+function_has syncFace 'if (currentFaceState() === "offered") armFace()' || fail "the check is armed only while the face is offered"
+function_has syncFace 'else if (facePam.active) settleFaceAttempt(' || fail "the check is withdrawn once the face is no longer offered"
+! grep -q 'startFace\|faceScanRequested' "$service" "$view" || fail "nothing in the lock or its field starts a scan"
+{ grep -Fq "          if (submitted.length > 0) root.submitPassword(submitted)" "$view" &&
+  ! grep -A1 -F "root.submitPassword(submitted)" "$view" | grep -q 'else'; } || fail "Enter submits a typed password and nothing else"
+grep -Pzo 'root\.startFingerprint\(\)\n\s*root\.syncFace\(\)' "$service" >/dev/null || fail "the check is armed once the lock is secure, beside the fingerprint"
+function_has runWake 'syncFace()' || fail "waking the display re-checks the offer"
+grep -q 'onFaceConfiguredChanged: syncFace()' "$service" || fail "enrolling or removing the face re-checks the offer"
+grep -q 'onPamMessage: root.noteFaceMessage(message)' "$service" || fail "the lock follows the helper's lines"
+function_has noteFaceMessage 'if (message === FaceModel.SCAN_MESSAGE) {' || fail "the helper's scan line marks the scan's start"
+function_has noteFaceMessage 'failureMessage = "Face refused"' || fail "a refused key is reported in the field"
+awk '/function runBlank\(\) \{/{f=1} f && /if \(faceAuthenticating\) \{/{found=1} f && /^  \}/{exit} END{exit !found}' "$service" ||
+  fail "blanking the display stops a running scan, not the waiting check"
+{ grep -q 'interval: FaceModel.ATTEMPT_TIMEOUT_MS' "$service" && function_has noteFaceMessage 'faceAbortTimer.restart()'; } ||
+  fail "a scan is bounded by the model's timeout from its start"
+function_has handleFaceFinished 'if (!scanned) {' || fail "a check that ends without a scan is no attempt"
+{ function_has handleFaceFinished 'failureMessage = "No match"' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
+  fail "a miss is reported in the field and the check waits again after a pause"
+grep -q 'interval: FaceModel.REARM_DELAY_MS' "$service" || fail "the pause comes from the model"
+grep -Pzo 'interval: 30000\s*repeat: true\s*running: root\.lockRequested && root\.faceConfigured\s*onTriggered: root\.syncFace\(\)' "$service" >/dev/null ||
+  fail "the offer is re-checked while the display stays on"
+{ grep -q 'face: root.faceConfigured' "$service" && grep -q 'faceArmed: facePam.active' "$service"; } || fail "the lock status reports enrollment and the waiting check"
+grep -q '"Scanning face…"' "$view" || fail "a running scan is shown in the field"
+{ grep -q 'id: faceIcon' "$view" && grep -q 'Math.max(root.fingerprintReserve, root.faceReserve)' "$view"; } || fail "the view shows a face hint and keeps the dots clear of it"
+pass "the lock keeps a face check waiting for the Copilot key while it offers the face and never scans on its own"
+
 # Each lock bounds the offer: so many scans, so long after locking. The policy
 # is root's file, the count and the clock belong to the lock, and the decision
 # to scan reads them afresh instead of trusting a binding.
 grep -q 'path: "/etc/omarchy/face.conf"' "$service" || fail "the policy comes from the file the setup writes"
 grep -q 'onLoadFailed: root.applyFacePolicy("")' "$service" || fail "a missing policy file means the strict defaults"
-function_has startFace 'refreshFaceWindow()' || fail "a scan request re-reads the clock, which a dark display may have left stale"
-function_has startFace 'if (currentFaceState() !== "offered") return' || fail "a scan starts only while the lock offers the face"
-function_has startFace 'faceAttempts += 1' || fail "every started scan counts against the lock's allowance"
+function_has noteFaceMessage 'refreshFaceWindow()' || fail "a scan's start re-reads the clock, which a dark display or sleep may have left stale"
+function_has noteFaceMessage 'if (currentFaceState() !== "offered") {' || fail "a scan past the lock's offer is stopped at once"
+function_has noteFaceMessage 'faceAttempts += 1' || fail "every scan counts against the lock's allowance"
 function_has resetAuthenticationState 'faceAttempts = 0' || fail "a new lock or an unlock restores the allowance"
 function_has beginLock 'faceLockedAtMs = Date.now()' || fail "the window starts when the screen locks"
 function_has recoverStrandedLock 'faceLockedAtMs = 0' || fail "a lock recovered after a shell restart offers no face: its age and spent scans are unknown"
-function_has runWake 'refreshFaceWindow()' || fail "waking the display shows whether the window has closed"
+function_has syncFace 'refreshFaceWindow()' || fail "every re-check of the offer reads the window afresh"
 # A scan holds the display up the way a password check does, by stopping the
 # idle blank, which would otherwise cut it short and spend the allowance.
 # Upstream's own gate on the timer stays as it is.

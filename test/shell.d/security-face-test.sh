@@ -15,6 +15,8 @@ pamd="$test_tmp/pamd"
 seclib="$test_tmp/security"
 etc_howdy="$test_tmp/howdy-etc"
 omarchy_etc="$test_tmp/omarchy-etc"
+units="$test_tmp/units"
+face_key="$test_tmp/omarchy-face-key"
 log="$test_tmp/calls.log"
 output="$test_tmp/output"
 copy="$test_tmp/setup.sh"
@@ -23,25 +25,27 @@ mkdir -p "$stub_bin"
 # The face block skips two lines (hint and module); fingerprint's gate skips one.
 gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 gate1='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-hint='auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint'
-# sudo and polkit ask first; the lock service scans on its own.
+hint='auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint'
+# sudo and polkit ask first; the lock service waits for the key on its own.
 stable_module="pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match"
 lock_module="pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
 legacy_module="pam_python.so $seclib/howdy/pam.py"
-beta_module="pam_howdy.so"
 
 # The setup writes fixed root-owned paths. Retarget a scratch copy, and fail if
 # a path is not named exactly as expected, so the seam keeps standing for the
 # shipped command.
 for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face' \
-  'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf'; do
+  'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' 'face_key=/usr/bin/omarchy-face-key' \
+  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service'; do
   (( $(grep -Fxc "$literal" "$setup") == 1 )) || fail "setup names $literal exactly once"
 done
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
+  -e "s|^face_key=/usr/bin/omarchy-face-key$|face_key=$face_key|" \
   -e "s|/etc/pam.d/|$pamd/|g" \
   -e "s|/etc/howdy/|$etc_howdy/|g" \
+  -e "s|/etc/systemd/system/|$units/|g" \
   -e "s|/etc/omarchy/|$omarchy_etc/|g" "$setup" >"$copy"
-! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
+! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/\|/etc/systemd/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
 pass "setup names its fixed paths once each, and the test drives a retargeted copy"
 
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
@@ -88,8 +92,9 @@ cat >"$stub_bin/pacman" <<'SH'
 case "$TEST_HOWDY_LAYOUT" in
   stable) printf '%s\n' "$TEST_SECLIB/howdy/" "$TEST_SECLIB/howdy/cli.py" "$TEST_SECLIB/howdy/pam.py" "$TEST_SECLIB/howdy/compare.py" "$TEST_SECLIB/howdy/config.ini" "/usr/bin/howdy" ;;
   beta) printf '%s\n' "$TEST_SECLIB/pam_howdy.so" "$TEST_ETC_HOWDY/" "$TEST_ETC_HOWDY/config.ini" "/usr/bin/howdy" ;;
+  both) printf '%s\n' "$TEST_SECLIB/pam_howdy.so" "$TEST_SECLIB/howdy/compare.py" "$TEST_ETC_HOWDY/config.ini" "/usr/bin/howdy" ;;
   nomodule) printf '%s\n' "$TEST_SECLIB/howdy/config.ini" "/usr/bin/howdy" ;;
-  noconfig) printf '%s\n' "$TEST_SECLIB/pam_howdy.so" "/usr/bin/howdy" ;;
+  noconfig) printf '%s\n' "$TEST_SECLIB/howdy/compare.py" "/usr/bin/howdy" ;;
   *) exit 1 ;;
 esac
 SH
@@ -142,7 +147,11 @@ case "${1:-}" in
     ;;
   pamtester)
     [[ $* == "pamtester omarchy-face-verify alice authenticate" ]] || reject "$@"
+    cp "$TEST_TMP/pamd/omarchy-face-verify" "$TEST_TMP/verify-seen"
     [[ $TEST_VERIFY == "ok" ]]
+    ;;
+  systemctl)
+    [[ $* == "systemctl daemon-reload" || $* == "systemctl enable --now omarchy-face-key.socket" ]] || reject "$@"
     ;;
   *)
     reject "$@"
@@ -150,12 +159,19 @@ case "${1:-}" in
 esac
 SH
 
+cat >"$stub_bin/omarchy-hyprland-toggle" <<'SH'
+#!/bin/bash
+printf 'toggle %s\n' "$*" >>"$TEST_LOG"
+SH
+
 chmod +x "$stub_bin"/*
 
 reset_fixture() {
   : >"$log"
-  rm -rf "$pamd" "$seclib" "$etc_howdy" "$omarchy_etc"
-  mkdir -p "$pamd" "$seclib/howdy" "$etc_howdy"
+  rm -rf "$pamd" "$seclib" "$etc_howdy" "$omarchy_etc" "$units"
+  mkdir -p "$pamd" "$seclib/howdy" "$etc_howdy" "$units"
+  printf '#!/bin/bash\n' >"$face_key"
+  chmod +x "$face_key"
   printf '#%%PAM-1.0\nauth\t\tinclude\t\tsystem-auth\naccount\t\tinclude\t\tsystem-auth\nsession\t\tinclude\t\tsystem-auth\n' >"$pamd/sudo"
   printf '[video]\ndevice_path = none\n' >"$seclib/howdy/config.ini"
   printf '[video]\ndevice_path = none\n' >"$etc_howdy/config.ini"
@@ -183,6 +199,8 @@ assert_no_mutation() {
   ! grep -q '^sudo' "$log" || fail "$description" "$(cat "$log")"
   [[ ! -e $pamd/omarchy-lock-face && ! -e $pamd/omarchy-face-verify && ! -e $pamd/polkit-1 ]] || fail "$description left PAM files behind"
   [[ ! -e $omarchy_etc/face.conf ]] || fail "$description left the face policy behind"
+  [[ -z $(ls -A "$units") ]] || fail "$description left the key service behind"
+  ! grep -q '^toggle' "$log" || fail "$description took the Copilot key" "$(cat "$log")"
 }
 
 expected_block() {
@@ -217,6 +235,14 @@ assert_no_mutation "a malformed device path configures nothing"
 pass "setup rejects a device path that is not a /dev/video node"
 
 reset_fixture
+rm "$face_key"
+invoke_setup ready stable && fail "setup fails without the key service"
+grep -q 'omarchy-face-key is missing' "$output" || fail "the missing key service is explained" "$(cat "$output")"
+assert_no_mutation "a missing key service configures nothing"
+! grep -q '^aur' "$log" || fail "a missing key service installs nothing" "$(cat "$log")"
+pass "setup stops before installing anything when Omarchy lacks the key service"
+
+reset_fixture
 TEST_CHOICE=0 invoke_setup ready stable && fail "setup stops when the scope question is cancelled"
 assert_no_mutation "a cancelled scope question configures nothing"
 ! grep -q '^aur' "$log" || fail "a cancelled scope question installs nothing" "$(cat "$log")"
@@ -233,6 +259,13 @@ assert_no_mutation "a Howdy without a PAM module configures nothing"
 pass "setup stops when the installed Howdy has no PAM module"
 
 reset_fixture
+invoke_setup ready beta && fail "setup refuses a Howdy whose only PAM module is native"
+grep -q 'compare.py' "$output" || fail "the refusal says what the key needs" "$(cat "$output")"
+assert_no_mutation "a native module that cannot wait for the key configures nothing"
+grep -qxF "device_path = none" "$etc_howdy/config.ini" || fail "a refused Howdy keeps its config" "$(cat "$etc_howdy/config.ini")"
+pass "setup refuses Howdy's native PAM module, which scans without waiting for the key"
+
+reset_fixture
 invoke_setup ready noconfig && fail "setup fails when Howdy ships no config"
 assert_no_mutation "a Howdy without a config configures nothing"
 pass "setup stops when the installed Howdy has no configuration file"
@@ -241,6 +274,7 @@ reset_fixture
 invoke_setup ready stable fail && fail "setup fails when enrollment fails"
 grep -q 'Enrollment failed' "$output" || fail "a failed enrollment is reported" "$(cat "$output")"
 ! grep -q $'^sudo\ttee' "$log" || fail "a failed enrollment writes no PAM file" "$(cat "$log")"
+! grep -q '^toggle' "$log" || fail "a failed enrollment keeps the Copilot key with the menu" "$(cat "$log")"
 [[ ! -e $pamd/omarchy-lock-face ]] || fail "a failed enrollment leaves no lock PAM file"
 grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
   fail "Howdy is pointed at the IR device before enrollment" "$(cat "$seclib/howdy/config.ini")"
@@ -254,6 +288,7 @@ grep -q 'Verification failed' "$output" || fail "a failed verification is report
 [[ ! -e $pamd/polkit-1 ]] || fail "a failed verification creates no polkit stack"
 ! grep -q 'omarchy-face-match' "$pamd/sudo" || fail "a failed verification leaves sudo alone" "$(cat "$pamd/sudo")"
 [[ ! -e $omarchy_etc/face.conf ]] || fail "a failed verification writes no face policy"
+[[ -f $units/omarchy-face-key.socket ]] || fail "the key service verification needed stays for the next run"
 pass "a failed verification removes its PAM service and touches no stack"
 
 reset_fixture
@@ -270,6 +305,17 @@ expected_lock=$(printf '%s\n' '#%PAM-1.0' "auth       required                  
   'account    include                     system-local-login')
 [[ $(<"$pamd/omarchy-lock-face") == "$expected_lock" ]] ||
   fail "the lock PAM service requires the face module" "$(cat "$pamd/omarchy-lock-face")"
+verify_tee=$(grep -n $'^sudo\ttee\t'"$pamd/omarchy-face-verify" "$log" | head -n1 | cut -d: -f1)
+[[ -n $verify_tee ]] || fail "verification writes its PAM service" "$(cat "$log")"
+{ grep -qx 'ListenStream=/run/omarchy-face-key.sock' "$units/omarchy-face-key.socket" &&
+  grep -qx 'SocketMode=0600' "$units/omarchy-face-key.socket"; } || fail "the key service listens on root's private socket" "$(cat "$units/omarchy-face-key.socket")"
+{ grep -qx 'ExecStart=/usr/bin/omarchy-face-key serve' "$units/omarchy-face-key.service" &&
+  grep -qx 'DeviceAllow=char-input r' "$units/omarchy-face-key.service" &&
+  grep -qx 'DevicePolicy=closed' "$units/omarchy-face-key.service"; } || fail "the key service may read input devices and nothing else" "$(cat "$units/omarchy-face-key.service")"
+(( $(log_line_of $'sudo\tsystemctl\tdaemon-reload') < $(log_line_of $'sudo\tsystemctl\tenable\t--now\tomarchy-face-key.socket') )) ||
+  fail "systemd reads the units before the socket is enabled" "$(cat "$log")"
+grep -qx 'toggle face-key on' "$log" || fail "Hyprland takes the Copilot key from the Omarchy menu" "$(cat "$log")"
+(( $(log_line_of 'toggle face-key on') < verify_tee )) || fail "the key works before verification asks for it" "$(cat "$log")"
 ! grep -q 'expose_authtok' "$pamd/omarchy-lock-face" || fail "the lock service never asks: the lock screen cannot answer" "$(cat "$pamd/omarchy-lock-face")"
 grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the IR device" "$(cat "$seclib/howdy/config.ini")"
@@ -280,6 +326,9 @@ verify_write=$(log_line_of $'sudo\ttee\t'"$pamd/omarchy-face-verify")
 verify_drop=$(log_line_of $'sudo\trm\t-f\t'"$pamd/omarchy-face-verify")
 (( $(log_line_of $'sudo\thowdy\tadd') < verify_write )) || fail "enrollment precedes the verification service" "$(cat "$log")"
 (( verify_write < $(log_line_of $'sudo\tpamtester') )) || fail "the verification service precedes verification" "$(cat "$log")"
+grep -q 'press the Copilot key' "$output" || fail "verification asks for the key" "$(cat "$output")"
+[[ $(<"$test_tmp/verify-seen") == "$(printf '%s\n' '#%PAM-1.0' "auth       required                    $lock_module --wait")" ]] ||
+  fail "verification asks for the face alone: the helper waits for the key, and no password prompt appears" "$(cat "$test_tmp/verify-seen")"
 (( $(log_line_of $'sudo\tpamtester') < verify_drop )) || fail "the verification service goes once it has served" "$(cat "$log")"
 (( verify_drop < $(log_line_of $'sudo\tsed\t-i\t-e\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
 (( verify_drop < $(log_line_of $'sudo\ttee\t'"$pamd/omarchy-lock-face") )) || fail "verification precedes the lock service" "$(cat "$log")"
@@ -356,10 +405,9 @@ invoke_setup ready stable || fail "setup succeeds over a face line that never as
 pass "setup upgrades a face line that scanned without asking"
 
 reset_fixture
-invoke_setup ready beta || fail "setup succeeds with the beta layout" "$(cat "$output"; cat "$log")"
-[[ $(sed -n 1,2p "$pamd/sudo") == "$(printf '%s\n' "$gate1" "auth      sufficient $beta_module")" ]] ||
-  fail "the beta layout uses the native module behind a one-line gate and no hint" "$(cat "$pamd/sudo")"
-! grep -q 'aur pam-python' "$log" || fail "the beta layout needs no pam-python" "$(cat "$log")"
+invoke_setup ready both || fail "setup succeeds with a Howdy that ships compare.py beside a native module" "$(cat "$output"; cat "$log")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(expected_block)" ]] || fail "compare.py serves through the helper, not the native module" "$(cat "$pamd/sudo")"
+! grep -q 'pam_howdy' "$pamd/sudo" || fail "the native module is never configured" "$(cat "$pamd/sudo")"
 grep -qxF "device_path = /dev/video51" "$etc_howdy/config.ini" ||
-  fail "Howdy's beta config points at the IR device" "$(cat "$etc_howdy/config.ini")"
-pass "setup adapts the module and config to Howdy's beta layout"
+  fail "the config the package ships under /etc points at the IR device" "$(cat "$etc_howdy/config.ini")"
+pass "setup uses compare.py and the configuration the installed Howdy ships"
