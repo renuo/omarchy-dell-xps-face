@@ -27,7 +27,7 @@ Item {
   property string passwordText: ""
   property bool syncingPasswordText: false
 
-  readonly property string placeholderText: "Enter Password"
+  readonly property string placeholderText: faceConfigured ? "Face or Password" : "Enter Password"
   readonly property int fieldWidth: 381
   readonly property int fieldHeight: 67
   readonly property int outlineThickness: 3
@@ -43,7 +43,7 @@ Item {
   readonly property real passwordDotScale: dotMetrics.advanceWidth > 0
     ? Math.min(1, (passwordInput.width - 4) / dotMetrics.advanceWidth)
     : 1
-  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && failureMessage.length === 0
+  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && !faceAuthenticating && failureMessage.length === 0
   readonly property bool errorState: failureMessage.length > 0
   readonly property var inputBorderSpec: errorState
     ? Border.surfaceSpec("lock", "border-error", Commons.Color.lock.borderError, root.outlineThickness, "border-alpha")
@@ -53,6 +53,8 @@ Item {
   readonly property bool feedActive: root.video && root.loadBackground && !root.displaysBlank && !root.powerSaverActive
 
   signal submitPassword(string password)
+  // Enter on the empty field: the consent to scan the face.
+  signal faceScanRequested()
   signal passwordTextEdited(string password)
   signal clearFailureRequested()
   signal wakeRequested()
@@ -208,6 +210,7 @@ Item {
           var submitted = root.passwordText
           root.passwordTextEdited("")
           if (submitted.length > 0) root.submitPassword(submitted)
+          else root.faceScanRequested()
         }
 
         Keys.onPressed: function(event) {
@@ -226,12 +229,12 @@ Item {
       Text {
         textFormat: Text.PlainText
         anchors.fill: passwordInput
-        text: root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)
+        text: root.faceAuthenticating ? "Scanning face…" : root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)
         visible: passwordInput.text.length === 0
-        color: root.authenticatingPassword ? Commons.Color.lock.text : (root.failureMessage.length > 0 ? Commons.Color.lock.textError : Commons.Color.lock.placeholder)
+        color: (root.authenticatingPassword || root.faceAuthenticating) ? Commons.Color.lock.text : (root.failureMessage.length > 0 ? Commons.Color.lock.textError : Commons.Color.lock.placeholder)
         font.family: Style.font.family
         font.pixelSize: root.fieldFontSize
-        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0
+        font.italic: !root.authenticatingPassword && !root.faceAuthenticating && root.failureMessage.length > 0
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
@@ -243,8 +246,8 @@ Item {
       // A reader the shell cannot reach crosses out rather than disappears, so
       // it stops inviting touches that can never unlock.
       // Face hint pinned inside the field's left edge when the IR camera is
-      // enrolled; it brightens while an attempt runs, so the user knows to look
-      // at the camera rather than type.
+      // enrolled; it brightens while a scan runs. Enter on the empty field
+      // starts one, so the placeholder says "Face or Password".
       Text {
         id: faceIcon
         objectName: "faceIndicator"

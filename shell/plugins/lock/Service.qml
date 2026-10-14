@@ -27,7 +27,6 @@ Item {
   property bool fingerprintConfigured: false
   property bool faceConfigured: false
   property bool faceAuthenticating: false
-  property double faceLastStartMs: 0
   property int fingerprintUnreachedStreak: 0
   property bool fingerprintAttemptReachedDevice: false
   property bool fingerprintAttemptFastError: false
@@ -210,7 +209,6 @@ Item {
     if (passwordPam.active) passwordPam.abort()
     if (fingerprintPam.active) fingerprintPam.abort()
     settleFaceAttempt()
-    faceLastStartMs = 0
   }
 
   function beginLock() {
@@ -258,7 +256,6 @@ Item {
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
     nudgeFingerprint()
-    startFace()
   }
 
   // User activity advances retries without recreating a busy retry loop.
@@ -439,20 +436,20 @@ Item {
     armFingerprintRetry(FingerprintModel.retryDelayMs(fingerprintUnreachedStreak))
   }
 
-  // One face attempt per wake: when the session lock turns secure, and on
-  // every wake event after a cooldown. Howdy's own timeout ends the attempt,
-  // so there is no retry loop; the camera and its flood LED stay off until the
-  // user touches the lock again.
+  // The face scans only on an explicit Enter in the empty password field, the
+  // same consent as the empty answer sudo and polkit take. Nothing scans on
+  // lock, wake or a timer, so the camera and its invisible flood LED stay off
+  // until asked. Howdy's own timeout ends an attempt; faceAbortTimer bounds a
+  // conversation that never completes.
   function startFace() {
     if (!lockRequested || !sessionLock.secure || !faceConfigured) return
     if (facePam.active || faceAuthenticating || authenticatingPassword) return
-    var now = Date.now()
-    if (!FaceModel.shouldAttempt(now, faceLastStartMs)) return
 
-    faceLastStartMs = now
+    failureMessage = ""
     faceAuthenticating = true
     if (!facePam.start()) {
       faceAuthenticating = false
+      failureMessage = "Face unavailable"
       logEvent("face-start-failed")
       return
     }
@@ -461,12 +458,13 @@ Item {
   }
 
   // abort() gives no completion signal; settle the attempt here.
-  function settleFaceAttempt(event) {
+  function settleFaceAttempt(event, message) {
     faceAbortTimer.stop()
     if (facePam.active) facePam.abort()
     if (!faceAuthenticating) return
     faceAuthenticating = false
     if (event) logEvent(event)
+    if (message && lockRequested) failureMessage = message
   }
 
   function handleFaceFinished(result) {
@@ -477,8 +475,12 @@ Item {
     if (result === PamResult.Success) {
       logEvent("face-matched")
       finishUnlock()
+    } else if (result === PamResult.Error) {
+      logEvent("face-error")
+      failureMessage = "Face unavailable"
     } else {
-      logEvent(result === PamResult.Error ? "face-error" : "face-no-match")
+      logEvent("face-no-match")
+      failureMessage = "No match"
     }
   }
 
@@ -505,7 +507,6 @@ Item {
         sessionLockStabilizeTimer.stop()
         pendingSessionLockTimer.stop()
         root.startFingerprint()
-        root.startFace()
       }
     }
 
@@ -552,6 +553,7 @@ Item {
         passwordText: root.enteredPassword
         onPasswordTextEdited: function(password) { root.enteredPassword = password }
         onSubmitPassword: function(password) { root.submitPassword(password) }
+        onFaceScanRequested: root.startFace()
         onClearFailureRequested: root.failureMessage = ""
         onWakeRequested: root.runWake()
       }
@@ -645,7 +647,7 @@ Item {
 
     // A completed(Error) follows; settling here keeps the LED off meanwhile.
     onError: function(error) {
-      root.settleFaceAttempt("face-error")
+      root.settleFaceAttempt("face-error", "Face unavailable")
     }
   }
 
@@ -679,7 +681,7 @@ Item {
     id: faceAbortTimer
     interval: FaceModel.ATTEMPT_TIMEOUT_MS
     repeat: false
-    onTriggered: root.settleFaceAttempt("face-timeout")
+    onTriggered: root.settleFaceAttempt("face-timeout", "Face unavailable")
   }
 
   Timer {
