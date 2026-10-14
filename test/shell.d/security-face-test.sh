@@ -23,7 +23,9 @@ mkdir -p "$stub_bin"
 gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 gate1='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 hint='auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint'
+# sudo and polkit ask first; the lock service scans on its own.
 stable_module="pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match"
+lock_module="pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
 legacy_module="pam_python.so $seclib/howdy/pam.py"
 beta_module="pam_howdy.so"
 
@@ -227,10 +229,11 @@ expected_polkit=$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_mo
   'account   include system-auth' 'password  include system-auth' 'session   include system-auth')
 [[ $(<"$pamd/polkit-1") == "$expected_polkit" ]] ||
   fail "a missing polkit stack is created with the gate and the face module" "$(cat "$pamd/polkit-1")"
-expected_lock=$(printf '%s\n' '#%PAM-1.0' "auth       required                    $stable_module" \
+expected_lock=$(printf '%s\n' '#%PAM-1.0' "auth       required                    $lock_module" \
   'account    include                     system-local-login')
 [[ $(<"$pamd/omarchy-lock-face") == "$expected_lock" ]] ||
   fail "the lock PAM service requires the face module" "$(cat "$pamd/omarchy-lock-face")"
+! grep -q 'expose_authtok' "$pamd/omarchy-lock-face" || fail "the lock service never asks: the lock screen cannot answer" "$(cat "$pamd/omarchy-lock-face")"
 grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the IR device" "$(cat "$seclib/howdy/config.ini")"
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
@@ -277,7 +280,7 @@ invoke_setup ready stable || fail "setup succeeds over a pam_python face line" "
 pass "setup replaces the pam_python glue of an earlier setup with the asking block"
 
 reset_fixture
-printf '%s\n%s\n%s' "$gate1" "auth      sufficient $stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
+printf '%s\n%s\n%s' "$gate1" "auth      sufficient $lock_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds over a face line that never asked" "$(cat "$output")"
 [[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
   fail "a face line without the hint and expose_authtok is upgraded to the asking block" "$(cat "$pamd/sudo")"

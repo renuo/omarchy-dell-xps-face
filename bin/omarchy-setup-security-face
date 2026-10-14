@@ -30,8 +30,10 @@ face_gate_skipping() {
 # pam_howdy.so, which scans as soon as it runs; the stable release ships a
 # pam_python script, which needs Python 2, so pam_exec runs omarchy-face-match
 # around its compare.py instead (seteuid keeps root for sudo and polkit, stdout
-# feeds the prompt, expose_authtok asks first). The package's own file list
-# answers this even though the stable install is readable by root only.
+# feeds the prompt). This is the lock screen's line, which scans without
+# asking: the lock cannot answer a prompt, and a wake event is its consent.
+# The package's own file list answers this even though the stable install is
+# readable by root only.
 face_module_line() {
   local files
 
@@ -39,7 +41,7 @@ face_module_line() {
   if grep -qxF -- "$security_lib/pam_howdy.so" <<<"$files"; then
     echo "pam_howdy.so"
   elif grep -qxF -- "$security_lib/howdy/compare.py" <<<"$files"; then
-    echo "pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match"
+    echo "pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
   else
     return 1
   fi
@@ -53,16 +55,18 @@ howdy_config_file() {
     grep -m1 -xF -- "$security_lib/howdy/config.ini" <<<"$files"
 }
 
-# The lines a stack carries for face authentication, in order: the gate, the
-# hint when the module asks for consent, then the module.
+# The lines sudo and polkit carry for face authentication, in order: the gate,
+# then for the helper the hint and the module asking first (expose_authtok),
+# for the beta's native module just the module.
 face_block() {
   if [[ $face_module == pam_exec.so* ]]; then
     face_gate_skipping 2
     echo "$face_hint"
+    echo "auth      sufficient ${face_module%% /usr/bin/*} expose_authtok /usr/bin/omarchy-face-match"
   else
     face_gate_skipping 1
+    echo "auth      sufficient $face_module"
   fi
-  echo "auth      sufficient $face_module"
 }
 
 # True when the file carries the block exactly: contiguous and in order. The
