@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh; do
+for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh etc/sudoers.d shell/plugins/lock/Service.qml; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -31,6 +31,10 @@ for test in "$ROOT"/test/shell.d/*-test.sh; do
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
 install -m 644 "$ROOT"/install/hardware/intel/ipu7-ir-camera.sh "$checkout/install/hardware/intel/"
+install -m 644 "$ROOT"/etc/sudoers.d/omarchy-face-match "$checkout/etc/sudoers.d/"
+# The lock plugin files are upstream's with the face context added, so they
+# replace the checkout's copies outright; rebase them when upstream's move.
+install -m 644 "$ROOT"/shell/plugins/lock/Service.qml "$ROOT"/shell/plugins/lock/LockView.qml "$ROOT"/shell/plugins/lock/FaceModel.js "$checkout/shell/plugins/lock/"
 install -D -m 644 "$ROOT/docs/face-authentication.md" "$checkout/docs/face-authentication.md"
 
 # Each menu row goes directly under its FIDO2 sibling, once. The overlay spells
