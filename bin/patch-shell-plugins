@@ -1,0 +1,294 @@
+#!/usr/bin/python3
+"""Generate this overlay's lock and polkit plugins from an Omarchy shell tree.
+
+    bin/patch-shell-plugins <omarchy>/shell <output>/shell
+
+shell/plugins/lock and shell/plugins/polkit here are upstream's files with the
+face context and the face offer added at fixed anchors. Running this against
+upstream's tree regenerates them after upstream moves; running it against
+/usr/share/omarchy/shell produces the same change for the installed version,
+for clones made with `omarchy plugin clone`.
+"""
+
+import pathlib
+import re
+import sys
+
+
+def once(s, old, new):
+    assert s.count(old) == 1, f"anchor not unique: {old[:60]!r}"
+    return s.replace(old, new)
+
+
+def sub_once(s, pattern, repl):
+    out, n = re.subn(pattern, repl, s, count=1, flags=re.M)
+    assert n == 1, f"pattern not found: {pattern}"
+    return out
+
+
+FACE_MODEL = '''// The face scans only when the user presses Enter in the empty password
+// field, never on lock, wake or a timer: the IR camera and its invisible
+// flood LED must not run without that consent.
+
+// Howdy gives up after its own timeout (4 s by default); this bounds an
+// attempt whose PAM conversation never completes.
+var ATTEMPT_TIMEOUT_MS = 15000
+
+if (typeof module !== "undefined") {
+  module.exports = {
+    ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS
+  }
+}
+'''
+
+FACE_FUNCS = '''  // The face scans only on an explicit Enter in the empty password field, the
+  // same consent as the empty answer sudo and polkit take. Nothing scans on
+  // lock, wake or a timer, so the camera and its invisible flood LED stay off
+  // until asked. Howdy's own timeout ends an attempt; faceAbortTimer bounds a
+  // conversation that never completes.
+  function startFace() {
+    if (!lockRequested || !sessionLock.secure || !faceConfigured) return
+    if (facePam.active || faceAuthenticating || authenticatingPassword) return
+
+    failureMessage = ""
+    faceAuthenticating = true
+    if (!facePam.start()) {
+      faceAuthenticating = false
+      failureMessage = "Face unavailable"
+      logEvent("face-start-failed")
+      return
+    }
+    faceAbortTimer.restart()
+    logEvent("face-attempt")
+  }
+
+  // abort() gives no completion signal; settle the attempt here.
+  function settleFaceAttempt(event, message) {
+    faceAbortTimer.stop()
+    if (facePam.active) facePam.abort()
+    if (!faceAuthenticating) return
+    faceAuthenticating = false
+    if (event) logEvent(event)
+    if (message && lockRequested) failureMessage = message
+  }
+
+  function handleFaceFinished(result) {
+    faceAbortTimer.stop()
+    if (!faceAuthenticating) return
+    faceAuthenticating = false
+    if (!lockRequested) return
+    if (result === PamResult.Success) {
+      logEvent("face-matched")
+      finishUnlock()
+    } else if (result === PamResult.Error) {
+      logEvent("face-error")
+      failureMessage = "Face unavailable"
+    } else {
+      logEvent("face-no-match")
+      failureMessage = "No match"
+    }
+  }
+
+'''
+
+FACE_PAM = '''
+  PamContext {
+    id: facePam
+    config: "omarchy-lock-face"
+    user: root.userName
+
+    onCompleted: function(result) {
+      root.handleFaceFinished(result)
+    }
+
+    // A completed(Error) follows; settling here keeps the LED off meanwhile.
+    onError: function(error) {
+      root.settleFaceAttempt("face-error", "Face unavailable")
+    }
+  }
+'''
+
+FACE_TIMER = '''  Timer {
+    id: faceAbortTimer
+    interval: FaceModel.ATTEMPT_TIMEOUT_MS
+    repeat: false
+    onTriggered: root.settleFaceAttempt("face-timeout", "Face unavailable")
+  }
+
+'''
+
+FACE_FILEVIEW = '''  // The face setup writes this file only after a verified enrollment and the
+  // removal deletes it, so its presence is the enrollment signal.
+  FileView {
+    path: "/etc/pam.d/omarchy-lock-face"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.faceConfigured = true
+    onLoadFailed: root.faceConfigured = false
+    onFileChanged: reload()
+  }
+
+'''
+
+FACE_ICON = '''      // Face hint pinned inside the field's left edge when the IR camera is
+      // enrolled; it brightens while a scan runs. Enter on the empty field
+      // starts one, so the placeholder says "Face or Password".
+      Text {
+        id: faceIcon
+        objectName: "faceIndicator"
+        textFormat: Text.PlainText
+        anchors.left: parent.left
+        anchors.leftMargin: inputField.borderLeft + 18
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.faceConfigured
+        text: "\uf030"
+        color: root.faceAuthenticating ? %(active)s : %(placeholder)s
+%(font_lines)s
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+      }
+
+'''
+
+FACE_PAM_CONFIG = '''// Face authentication is offered only in the form that asks first: the helper
+// with expose_authtok, where an empty answer to the password prompt is the
+// consent to scan. A face line without it would scan unasked, and the dialog
+// must not invite that.
+function faceConfiguredFromPamConfig(raw) {
+  var lines = String(raw || "").split("\\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/^\\s+|\\s+$/g, "")
+    if (!line || line.charAt(0) === "#") continue
+    if (!line.match(/^auth\\s+/)) continue
+    if (line.indexOf("omarchy-face-match") !== -1 && line.indexOf("expose_authtok") !== -1) return true
+  }
+  return false
+}
+
+'''
+
+
+def patch_lock(src, dst):
+    service = (src / "Service.qml").read_text()
+    view = (src / "LockView.qml").read_text()
+
+    lines = service.split("\n")
+    last_import = max(i for i, l in enumerate(lines) if l.startswith("import "))
+    lines.insert(last_import + 1, 'import "FaceModel.js" as FaceModel')
+    service = "\n".join(lines)
+    service = once(service, "  property bool fingerprintConfigured: false\n",
+        "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n")
+    service = once(service, "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating\n",
+        "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating || faceAuthenticating\n")
+    service = once(service, "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n",
+        "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n    settleFaceAttempt()\n")
+    m = re.search(r"\n  function runBlank\(\) \{\n", service)
+    assert m
+    end = service.index("\n  }\n", m.end())
+    service = service[:end] + "\n    settleFaceAttempt(\"face-aborted: blank\")" + service[end:]
+    service = once(service, "  function handleFingerprintFinished(result) {\n", FACE_FUNCS + "  function handleFingerprintFinished(result) {\n")
+    service = sub_once(service, r"^(        )fingerprintConfigured: root\.fingerprintConfigured.*\n",
+        lambda m: m.group(0) + m.group(1) + "faceConfigured: root.faceConfigured\n" + m.group(1) + "faceAuthenticating: root.faceAuthenticating\n")
+    service = sub_once(service, r"^(      )fingerprintConfigured: root\.fingerprintConfigured.*\n",
+        lambda m: m.group(0) + m.group(1) + "faceConfigured: root.faceConfigured\n" + m.group(1) + "faceAuthenticating: false\n")
+    service = once(service, "        onSubmitPassword: function(password) { root.submitPassword(password) }\n",
+        "        onSubmitPassword: function(password) { root.submitPassword(password) }\n        onFaceScanRequested: root.startFace()\n")
+    i = service.index("    id: fingerprintPam\n")
+    end = service.index("\n  }\n", i) + len("\n  }\n")
+    service = service[:end] + FACE_PAM + service[end:]
+    service = once(service, "  Timer {\n    id: fingerprintRetryTimer\n", FACE_TIMER + "  Timer {\n    id: fingerprintRetryTimer\n")
+    service = once(service, '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n', FACE_FILEVIEW + '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n')
+    service = once(service, "        fingerprint: root.fingerprintConfigured,\n",
+        "        fingerprint: root.fingerprintConfigured,\n        face: root.faceConfigured,\n        faceAuthenticating: root.faceAuthenticating,\n")
+
+    view = once(view, "  property bool fingerprintConfigured: false\n",
+        "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n")
+    view = once(view, '  readonly property string placeholderText: "Enter Password"\n',
+        '  readonly property string placeholderText: faceConfigured ? "Face or Password" : "Enter Password"\n')
+    view = once(view, "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && failureMessage.length === 0\n",
+        "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && !faceAuthenticating && failureMessage.length === 0\n")
+    view = once(view, "  signal submitPassword(string password)\n",
+        "  signal submitPassword(string password)\n  // Enter on the empty field: the consent to scan the face.\n  signal faceScanRequested()\n")
+    view = once(view, "          if (submitted.length > 0) root.submitPassword(submitted)\n",
+        "          if (submitted.length > 0) root.submitPassword(submitted)\n          else root.faceScanRequested()\n")
+    view = once(view, '        text: root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n',
+        '        text: root.faceAuthenticating ? "Scanning face…" : root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n')
+    view = sub_once(view, r"^(        color: )root\.authenticatingPassword \? ", lambda m: m.group(1) + "(root.authenticatingPassword || root.faceAuthenticating) ? ")
+    view = once(view, "        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0\n",
+        "        font.italic: !root.authenticatingPassword && !root.faceAuthenticating && root.failureMessage.length > 0\n")
+    view = sub_once(view, r"^(  readonly property real fingerprintReserve: .*\n)",
+        lambda m: m.group(1) + "  readonly property real faceReserve: faceConfigured ? Math.round(faceIcon.implicitWidth + 12) : 0\n")
+    assert view.count("+ root.fingerprintReserve") == 2
+    view = view.replace("+ root.fingerprintReserve", "+ Math.max(root.fingerprintReserve, root.faceReserve)")
+    m = re.search(r"      Text \{\n        id: fingerprintIcon\n.*?\n      \}\n", view, re.S)
+    assert m
+    block = m.group(0)
+    color_line = re.search(r"^        color: (.*)$", block, re.M).group(1)
+    placeholder = color_line.split(": ")[-1].strip()
+    icon = FACE_ICON % {
+        "active": placeholder.replace(".placeholder", ".text"),
+        "placeholder": placeholder,
+        "font_lines": "\n".join(l for l in block.split("\n") if l.strip().startswith("font.")),
+    }
+    view = view.replace(block, icon + block, 1)
+
+    (dst / "Service.qml").write_text(service)
+    (dst / "LockView.qml").write_text(view)
+    (dst / "FaceModel.js").write_text(FACE_MODEL)
+
+
+def patch_polkit(src, dst):
+    agent = (src / "PolkitAgent.qml").read_text()
+    model = (src / "PolkitModel.js").read_text()
+
+    agent = once(agent, "  property bool fingerprintConfigured: false\n",
+        "  property bool fingerprintConfigured: false\n"
+        "  // omarchy-face-match asks first in the polkit PAM stack (a face is enrolled).\n"
+        "  property bool faceConfigured: false\n"
+        "  // The last answer sent was the empty consent to scan, not a password.\n"
+        "  property bool scanning: false\n")
+    agent = once(agent, "  readonly property bool fingerprintMode: fingerprintConfigured && !laptopClosed && dialogVisible && !responseRequired && !submitted && !errorFlash\n",
+        "  readonly property bool fingerprintMode: fingerprintConfigured && !laptopClosed && dialogVisible && !responseRequired && !submitted && !errorFlash\n"
+        "  // Face is offered while PAM waits for the password and the lid is open:\n"
+        "  // Enter on the empty field consents to the scan, typing takes the password\n"
+        "  // path. The PAM stack itself enforces this; the dialog only says so.\n"
+        "  readonly property bool faceOffered: faceConfigured && !laptopClosed && dialogVisible && responseRequired && !submitted && !errorFlash\n")
+    agent = once(agent, "    fingerprintConfigured = PolkitModel.fingerprintConfiguredFromPamConfig(raw)\n",
+        "    fingerprintConfigured = PolkitModel.fingerprintConfiguredFromPamConfig(raw)\n"
+        "    faceConfigured = PolkitModel.faceConfiguredFromPamConfig(raw)\n")
+    agent = once(agent, "    onLoadFailed: root.fingerprintConfigured = false\n",
+        "    onLoadFailed: {\n      root.fingerprintConfigured = false\n      root.faceConfigured = false\n    }\n")
+    agent = once(agent, "    errorFlash = false\n    submitted = false\n    passwordInput.text = \"\"\n",
+        "    errorFlash = false\n    submitted = false\n    scanning = false\n    passwordInput.text = \"\"\n")
+    agent = once(agent, "    submitted = true\n    errorFlash = false\n    flow.submit(passwordInput.text)\n",
+        "    scanning = faceConfigured && passwordInput.text.length === 0\n    submitted = true\n    errorFlash = false\n    flow.submit(passwordInput.text)\n")
+    agent = once(agent, '          text: "\\uf023"\n',
+        '          text: root.faceOffered || root.scanning ? "\\uf030" : "\\uf023"\n')
+    agent = once(agent, '            text: root.errorFlash ? "Wrong" : (root.submitted ? "Checking..." : "Enter password")\n',
+        '            text: root.errorFlash ? (root.scanning ? "No match" : "Wrong")\n'
+        '              : (root.submitted ? (root.scanning ? "Scanning face..." : "Checking...")\n'
+        '              : (root.faceOffered ? "Face or Password" : "Enter password"))\n')
+
+    model = once(model, "function authorizationLabel(message) {\n", FACE_PAM_CONFIG + "function authorizationLabel(message) {\n")
+    model = once(model, "    fingerprintConfiguredFromPamConfig: fingerprintConfiguredFromPamConfig,\n",
+        "    fingerprintConfiguredFromPamConfig: fingerprintConfiguredFromPamConfig,\n    faceConfiguredFromPamConfig: faceConfiguredFromPamConfig,\n")
+
+    (dst / "PolkitAgent.qml").write_text(agent)
+    (dst / "PolkitModel.js").write_text(model)
+
+
+def main(argv):
+    if len(argv) != 3:
+        print("Usage: bin/patch-shell-plugins <omarchy>/shell <output>/shell", file=sys.stderr)
+        return 2
+    src, dst = pathlib.Path(argv[1]), pathlib.Path(argv[2])
+    for name, patch in (("lock", patch_lock), ("polkit", patch_polkit)):
+        out = dst / "plugins" / name
+        out.mkdir(parents=True, exist_ok=True)
+        patch(src / "plugins" / name, out)
+        print(f"{name}: {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

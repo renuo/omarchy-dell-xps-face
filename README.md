@@ -1,13 +1,24 @@
 # omarchy-dell-xps-face
 
-Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092), developed as an overlay in upstream's layout:
+Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092): sudo, polkit and the lock screen unlock with a face, always behind a deliberate Enter, never on presence alone. Developed as an overlay in upstream's layout so it can be sent upstream as one change.
 
-- `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, plus `--driver` and `--device` for the layers a face setup needs.
-- `omarchy setup security face` and `omarchy remove security face` wire Howdy into sudo, polkit and the lock-screen PAM service, mirroring the fingerprint wizard.
-- `packaging/hm1092-ir-camera` is the driver package the wizard needs: the sensor module and bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
-- `omarchy-face-match` is the hidden `pam_exec` helper behind the face PAM lines, with `etc/sudoers.d/omarchy-face-match` for the lock screen, whose `shell/plugins/lock` gains a face context that scans when Enter is pressed in the empty field.
+```
+git clone https://github.com/renuo/omarchy-dell-xps-face
+```
 
-`docs/face-authentication.md` has the layers, contracts and known gaps.
+## What it adds
+
+- `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, with `--driver` and `--device` for the layers a face setup needs.
+- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo, polkit and the lock-screen PAM service, mirroring the fingerprint wizard. sudo and polkit ask first: Enter on the empty password prompt scans, a typed password skips the camera.
+- `omarchy-face-match`, the hidden `pam_exec` helper behind those PAM lines, with `etc/sudoers.d/omarchy-face-match` so the lock screen's user-level PAM can reach Howdy's root-only tree.
+- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", Enter scans, "Scanning face…" and "No match" report what happened.
+- `packaging/hm1092-ir-camera`: the driver package the wizard needs. The sensor module and the bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
+
+`docs/face-authentication.md` has the layers, contracts, known gaps and the exit plan for when mainline Linux catches up.
+
+## Status
+
+Verified on a Dell XPS 14 DA14260 on Omarchy 4.0.4 (Linux 7.2.5): the sensor streams, Howdy enrolls, and sudo, polkit and the lock screen unlock by face with the consent step. Not yet upstreamed; the package is not in Omarchy's repository yet.
 
 ## Layout
 
@@ -24,6 +35,7 @@ test/shell, test/shell.d/          upstream's runner and assertion protocol, wit
 docs/                              design notes
 bin/check, bin/setup, bin/run      lint and test, install dev deps, probe this machine
 bin/apply-to-checkout              copy the Omarchy side into an Omarchy checkout
+bin/patch-shell-plugins            regenerate the two plugins from any Omarchy shell tree
 ```
 
 ## Develop
@@ -34,38 +46,52 @@ bin/check             # shellcheck, the relay's unit tests, ./test/shell
 bin/run               # what the setup would see on this machine
 ```
 
-Tests stub the world and run the real scripts: sysfs fixture trees for the hardware predicate and the relay, scratch copies of the wizards with their fixed `/etc` and `/usr` paths retargeted, driven through a `sudo` stub that only accepts the expected privileged protocol inside the scratch tree, and a stubbed `media-ctl` for the relay's graph discovery. The relay's conversion tests need `python-numpy`.
+Tests stub the world and run the real scripts: sysfs fixture trees for the hardware predicate and the relay, scratch copies of the wizards and the helper with their fixed `/etc` and `/usr` paths retargeted, driven through `sudo` and `python3` stubs that only accept the expected protocol, a stubbed `media-ctl` for the relay's graph discovery, and node for the plugins' JavaScript models. The relay's conversion tests need `python-numpy`.
 
-## Try the driver
+## Try it on an installed Omarchy
+
+Until the pieces ship with Omarchy, each layer is put in place by hand. The driver first:
 
 ```
 (cd packaging/hm1092-ir-camera && makepkg -si)   # DKMS builds the modules for the running kernel
 sudo reboot                                      # ipu-bridge builds the camera graph at boot
 bin/run                                          # prints the relay device when everything is up
 sudo /usr/lib/hm1092-ir-camera/hm1092-relay --probe   # otherwise: what resolved and what did not
-systemctl status hm1092-camera-init hm1092-relay
 ```
 
-## Try the lock screen
+Then the helper, its grant, and the enrollment:
 
 ```
-sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/
+sudo install -m 755 bin/omarchy-face-match /usr/bin/omarchy-face-match
+sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/ && sudo visudo -c
+PATH="$PWD/bin:$PATH" omarchy-setup-security-face
+```
+
+Then the shell plugins, generated against the installed version so they match it:
+
+```
+bin/patch-shell-plugins /usr/share/omarchy/shell /tmp/face-shell
 omarchy plugin clone omarchy.lock          # ~/.config/omarchy/plugins/<you>.lock/
-cp shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
 omarchy plugin clone omarchy.polkit
-cp shell/plugins/polkit/{PolkitAgent.qml,PolkitModel.js} ~/.config/omarchy/plugins/$USER.polkit/
+cp /tmp/face-shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
+cp /tmp/face-shell/plugins/polkit/{PolkitAgent.qml,PolkitModel.js} ~/.config/omarchy/plugins/$USER.polkit/
 omarchy restart shell
 omarchy shell lock status                  # reports face: true once enrolled
 ```
-
-On an installed 4.0.4 the clones need the files generated against that version of the plugins (see `docs/face-authentication.md`).
 
 ## Upstream
 
 ```
 git clone https://github.com/basecamp/omarchy ~/Work/omarchy
 bin/apply-to-checkout ~/Work/omarchy
-cd ~/Work/omarchy && ./test/shell && omarchy dev link ~/Work/omarchy
+cd ~/Work/omarchy && ./test/all && omarchy dev link ~/Work/omarchy
 ```
 
-The package itself is not part of the checkout; it belongs in Omarchy's package repository next to `intel-ipu7-camera`.
+The plugin files in `shell/plugins` are generated from upstream's by `bin/patch-shell-plugins`; regenerate them when upstream's move. The package itself is not part of the checkout; it belongs in Omarchy's package repository next to `intel-ipu7-camera`.
+
+## License
+
+[MIT](LICENSE), with these exceptions:
+
+- `shell/plugins/lock` and `shell/plugins/polkit` are derived from Omarchy's, MIT, copyright David Heinemeier Hansson.
+- `packaging/hm1092-ir-camera` builds a GPL-2.0-only package: the sensor module comes from [jibsta210/svp7500-camera-fix-pack](https://github.com/jibsta210/svp7500-camera-fix-pack), and `hm1092-relay` is derived from [meros/hm1092-linux](https://github.com/meros/hm1092-linux).
