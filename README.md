@@ -5,7 +5,7 @@ Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with 
 - `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, plus `--driver` and `--device` for the layers a face setup needs.
 - `omarchy setup security face` and `omarchy remove security face` wire Howdy into sudo, polkit and the lock-screen PAM service, mirroring the fingerprint wizard.
 - `packaging/hm1092-ir-camera` is the driver package the wizard needs: the sensor module and bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
-- `omarchy-face-match` is the hidden `pam_exec` helper behind the face PAM lines, with `etc/sudoers.d/omarchy-face-match` for the lock screen, whose `shell/plugins/lock` gains a face context that tries once per wake.
+- `omarchy-face-match` is the hidden `pam_exec` helper behind the face PAM lines, with `etc/sudoers.d/omarchy-face-match` for the lock screen, whose `shell/plugins/lock` gains a face context that scans when Enter is pressed in the empty field.
 
 `docs/face-authentication.md` has the layers, contracts and known gaps.
 
