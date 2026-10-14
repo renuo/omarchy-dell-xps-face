@@ -19,6 +19,7 @@ install/hardware/intel/            the hardware leaf that installs the driver pa
 install/user/first-run/            the first-run invitation hook
 packaging/hm1092-ir-camera/        PKGBUILD, DKMS sources, relay, units, udev and WirePlumber rules
 shell/plugins/lock/                upstream's lock plugin with the face context added
+shell/plugins/polkit/              upstream's polkit agent, offering the face scan on Enter
 test/shell, test/shell.d/          upstream's runner and assertion protocol, with this overlay's suites
 docs/                              design notes
 bin/check, bin/setup, bin/run      lint and test, install dev deps, probe this machine
@@ -51,11 +52,13 @@ systemctl status hm1092-camera-init hm1092-relay
 sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/
 omarchy plugin clone omarchy.lock          # ~/.config/omarchy/plugins/<you>.lock/
 cp shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
+omarchy plugin clone omarchy.polkit
+cp shell/plugins/polkit/{PolkitAgent.qml,PolkitModel.js} ~/.config/omarchy/plugins/$USER.polkit/
 omarchy restart shell
 omarchy shell lock status                  # reports face: true once enrolled
 ```
 
-On an installed 4.0.4 the clone needs the files generated against that version of the plugin (see `docs/face-authentication.md`).
+On an installed 4.0.4 the clones need the files generated against that version of the plugins (see `docs/face-authentication.md`).
 
 ## Upstream
 
