@@ -11,4 +11,4 @@ This repository mirrors the layout of github.com/basecamp/omarchy so its files d
 
 Tests are TAP-style files under `test/shell.d/*-test.sh` sourcing `base-test.sh` (`pass`, `skip`, `fail`, `require_command`); `./test/shell` runs them all. Write the failing test first, then the change. Stub the world, run the real script, assert on the files and call log it leaves.
 
-`bin/check` lints and tests, `bin/setup` installs dev dependencies and sets the executable bits, `bin/run` probes the current machine.
+`bin/check` lints and tests, `bin/setup` installs dev dependencies and sets the executable bits, `bin/run` walks through the manual tests on a machine running a linked checkout with the overlay applied (`bin/run probe` probes the camera). Trials use Omarchy's own dev flow (`bin/apply-to-checkout`, `omarchy dev pkg-test`, `omarchy dev link`), never files copied into the system by hand. Strings the shell shows go through `default/i18n/en` catalog keys, as upstream's do. Dev scripts in `bin/` never take a system command's name: a checkout's `bin/` may be first on PATH.

@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh etc/sudoers.d default/hypr/toggles shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
+for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh etc/sudoers.d default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -24,9 +24,10 @@ done
 
 install -m 755 "$ROOT"/bin/omarchy-* "$checkout/bin/"
 for test in "$ROOT"/test/shell.d/*-test.sh; do
-  # Upstream owns the shared library, and the package suite tests packaging/,
-  # which stays in this overlay; only the checkout's own suites go across.
-  [[ ${test##*/} == "base-test.sh" || ${test##*/} == hm1092-ir-camera-package-test.sh ]] && continue
+  # Upstream owns the shared library, the package suite tests packaging/ and
+  # the overlay- suites this overlay's own scripts, which all stay here; only the
+  # checkout's own suites go across.
+  [[ ${test##*/} == "base-test.sh" || ${test##*/} == hm1092-ir-camera-package-test.sh || ${test##*/} == overlay-*-test.sh ]] && continue
   install -m 644 "$test" "$checkout/test/shell.d/"
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
@@ -65,6 +66,22 @@ while IFS= read -r line; do
   esac
 done <"$ROOT/default/omarchy/omarchy-menu.jsonc"
 
+# The face's English strings join upstream's catalogs; translations follow
+# through upstream's sync. The shell catalog keeps its keys sorted, and each
+# menu entry goes right after its FIDO2 sibling, as the menu rows do.
+shell_catalog="$checkout/default/i18n/en/shell.json"
+jq -S -s '.[0] + .[1]' "$shell_catalog" "$ROOT/default/i18n/en/shell.json" >"$shell_catalog.tmp"
+mv "$shell_catalog.tmp" "$shell_catalog"
+menu_catalog="$checkout/default/i18n/en/menu.json"
+jq --slurpfile ours "$ROOT/default/i18n/en/menu.json" '
+  reduce ($ours[0] | to_entries[]) as $entry (.;
+    if has($entry.key) then .[$entry.key] = $entry.value
+    else (keys_unsorted | index($entry.key | sub("\\.face$"; ".fido2"))) as $at
+      | if $at == null then error("no FIDO2 sibling for " + $entry.key) else . end
+      | to_entries | .[: $at + 1] + [$entry] + .[$at + 1:] | from_entries
+    end)' "$menu_catalog" >"$menu_catalog.tmp"
+mv "$menu_catalog.tmp" "$menu_catalog"
+
 # The IR leaf runs right after the RGB camera leaf it depends on, once.
 all_sh="$checkout/install/hardware/all.sh"
 # shellcheck disable=SC2016 # literal text for all.sh
@@ -82,5 +99,5 @@ if ! grep -qF -- "$ir_line" "$all_sh"; then
   mv "$all_sh.tmp" "$all_sh"
 fi
 
-echo "Applied to $checkout. Run ./test/shell there, then omarchy dev link $checkout."
+echo "Applied to $checkout. Run I18N_STRUCTURAL=1 ./test/shell there, then omarchy dev pkg-test and omarchy dev link $checkout."
 echo "The driver package itself lives in packaging/hm1092-ir-camera and is not part of the checkout."

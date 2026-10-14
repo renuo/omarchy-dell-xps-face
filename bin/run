@@ -1,16 +1,422 @@
 #!/bin/bash
 
-# Probe this machine the way the face setup will: every check reported, and
-# the IR device path on stdout once the driver is in place.
+# Walk through the manual tests on this machine. Each step says what to do and
+# what should happen, runs it, shows what the key service and Howdy logged,
+# and records the verdict; automatic steps judge for themselves. Without
+# arguments every step runs in order, named steps run alone, --list names
+# them. Omarchy runs the overlay from a linked checkout (see the README).
 
 set -uo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-export PATH="$ROOT/bin:$PATH"
+bin_dir=/usr/bin
+pam_dir=/etc/pam.d
+face_conf=/etc/omarchy/face.conf
+hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"
+plugins_dir="$HOME/.config/omarchy/plugins"
+me=${USER:-$(id -un)}
 
-if device=$(omarchy-hw-dell-xps-ir-camera --verbose --device); then
-  echo "ready: omarchy setup security face can use $device"
-else
-  echo "not ready: omarchy setup security face would stop here (see docs/face-authentication.md)" >&2
-  exit 1
+steps=(
+  "probe|The IR camera streams for Howdy"
+  "linked|Omarchy runs a checkout with this overlay applied"
+  "setup|The setup enrolls and verifies with the Copilot key, never a password"
+  "sudo-key|sudo: the Copilot key scans"
+  "sudo-typed|sudo: the key drops what was typed and scans"
+  "sudo-password|sudo: a typed password leaves the camera dark"
+  "sudo-enter|sudo: Enter on the empty prompt never scans"
+  "sudo-script|sudo -n never offers the face"
+  "polkit-key|polkit: the Copilot key scans"
+  "polkit-password|polkit: a typed password leaves the camera dark"
+  "conflict|Two prompts at once: the key serves neither and names both"
+  "menu|Without a prompt the Copilot key opens nothing"
+  "lock-key|Lock screen: the Copilot key unlocks, even on a dark screen"
+  "lock-failed|Lock screen: after the failed scans only the password unlocks"
+  "lock-expired|Lock screen: past the window only the password unlocks"
+  "lock-suspend|Lock screen: the key unlocks after a suspend"
+  "lid|Lid closed: sudo asks for the password alone"
+)
+
+declare -A titles results
+names=()
+for step in "${steps[@]}"; do
+  names+=("${step%%|*}")
+  titles[${step%%|*}]=${step#*|}
+done
+ran=()
+current=""
+restore_window=""
+
+result() {
+  results[$current]=$1
+  [[ -z ${2:-} ]] || echo "  $1: $2"
+}
+
+say() {
+  printf '  %s\n' "$@"
+}
+
+expect() {
+  echo -e "  \e[32mExpect:\e[0m $1"
+  shift
+  (( $# == 0 )) || printf '          %s\n' "$@"
+}
+
+# attempt <command>: run it the way it would be typed, with its exit status.
+attempt() {
+  local status=0
+
+  echo -e "  \e[2m\$ $1\e[0m"
+  bash -c "$1" || status=$?
+  echo -e "  \e[2mexit $status\e[0m"
+}
+
+journal_since_step() {
+  journalctl -q --no-pager -o short --since "@$step_started" -t omarchy-face-key -t howdy 2>/dev/null
+}
+
+logged() {
+  local lines entries
+
+  echo "  Logged by the key service and Howdy:"
+  if ! lines=$(journal_since_step); then
+    echo "    (the journal is not readable)"
+  elif [[ -z $lines ]]; then
+    echo "    (nothing)"
+  else
+    mapfile -t entries <<<"$lines"
+    printf '    %s\n' "${entries[@]}"
+  fi
+}
+
+summary() {
+  local name failed=0
+
+  echo -e "\n\e[1mSummary\e[0m"
+  for name in "${ran[@]}"; do
+    printf '%-16s %s\n' "$name" "${results[$name]:-stopped}"
+    [[ ${results[$name]:-} != failed ]] || failed=1
+  done
+  return "$failed"
+}
+
+quit() {
+  summary
+  exit 130
+}
+
+confirm() {
+  local status=0
+
+  gum confirm "$1" || status=$?
+  (( status != 130 )) || quit
+  return "$status"
+}
+
+verdict() {
+  local answer
+
+  logged
+  answer=$(gum choose --header "Did it behave as described?" Passed Failed Skip) || quit
+  case $answer in
+    Passed) result passed ;;
+    Failed) result failed ;;
+    *) result skipped ;;
+  esac
+}
+
+# uses <sudo|polkit-1|lock>: whether the setup put the face there.
+uses() {
+  if [[ $1 == lock ]]; then
+    [[ -f $pam_dir/omarchy-lock-face ]]
+  else
+    grep -qs 'omarchy-face-match' "$pam_dir/$1"
+  fi
+}
+
+needs() {
+  local stack
+
+  for stack in "$@"; do
+    if ! uses "$stack"; then
+      result skipped "the setup left the face out of ${stack%-1}"
+      return 1
+    fi
+  done
+}
+
+# lock_and_wait <command...>: lock (or suspend, which locks), then wait until
+# the lock has engaged and opened again.
+lock_and_wait() {
+  local tries=0
+
+  "$@"
+  while ! omarchy-hyprland-session-locked && (( tries++ < 40 )); do
+    sleep 0.5
+  done
+  while omarchy-hyprland-session-locked; do
+    sleep 0.5
+  done
+}
+
+policy() {
+  local value
+
+  value=$(sed -n "s/^$1=\"\{0,1\}\([0-9]*\)\"\{0,1\}$/\1/p" "$face_conf" 2>/dev/null | head -n1)
+  echo "${value:-$2}"
+}
+
+restore_policy() {
+  [[ -z $restore_window ]] || sudo sed -i "s/^LOCK_WINDOW_MINUTES=.*/$restore_window/" "$face_conf"
+  restore_window=""
+}
+
+step_probe() {
+  if "$hw_check" --verbose --device; then
+    result passed
+  else
+    result failed "omarchy setup security face would stop here (see docs/face-authentication.md)"
+  fi
+}
+
+step_linked() {
+  local stale=() fixes=() source relative manifest clone packaged=0
+
+  if [[ -z ${OMARCHY_PATH:-} || $OMARCHY_PATH == /usr/share/omarchy ]]; then
+    result failed "Omarchy runs its release: bin/apply-to-checkout <checkout>, omarchy dev link <checkout>, reboot"
+    return
+  fi
+
+  for source in "$ROOT"/bin/omarchy-* "$ROOT/default/hypr/toggles/face-key.lua" "$ROOT/etc/sudoers.d/omarchy-face-match" \
+    "$ROOT"/shell/plugins/lock/* "$ROOT"/shell/plugins/polkit/*; do
+    relative=${source#"$ROOT"/}
+    cmp -s "$source" "$OMARCHY_PATH/$relative" || stale+=("$OMARCHY_PATH/$relative")
+  done
+  grep -qs '"setup.security.face"' "$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc" ||
+    stale+=("the menu rows in $OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc")
+  (( ${#stale[@]} == 0 )) || fixes+=("bin/apply-to-checkout $OMARCHY_PATH")
+
+  # PAM, the lock's sudoers rule and the key service name these by their
+  # packaged paths, which a dev link cannot shadow.
+  for source in "$ROOT/bin/omarchy-face-match" "$ROOT/bin/omarchy-face-key"; do
+    if ! cmp -s "$source" "$bin_dir/${source##*/}"; then
+      stale+=("$bin_dir/${source##*/}")
+      packaged=1
+    fi
+  done
+  if ! sudo -n -l "$bin_dir/omarchy-face-match" >/dev/null 2>&1; then
+    stale+=("the lock's sudoers grant")
+    packaged=1
+  fi
+  (( ! packaged )) || fixes+=("omarchy dev pkg-test")
+
+  # A clone of the lock or the polkit agent runs instead of the checkout's.
+  for manifest in "$plugins_dir"/*/manifest.json; do
+    if grep -qsE '"clonedFrom": *"omarchy\.(lock|polkit)"' "$manifest"; then
+      clone=${manifest%/manifest.json}
+      clone=${clone##*/}
+      stale+=("the plugin clone $clone")
+      fixes+=("omarchy plugin remove $clone")
+    fi
+  done
+
+  if (( ${#stale[@]} == 0 )); then
+    result passed
+  else
+    printf '  not this overlay: %s\n' "${stale[@]}"
+    printf '  fix with: %s\n' "${fixes[@]}"
+    result failed "then run bin/run again"
+  fi
+}
+
+step_setup() {
+  if uses sudo || uses polkit-1 || uses lock; then
+    if ! confirm "Face is set up already. Run the setup again? It enrolls one more face model."; then
+      result skipped "the setup ran before"
+      return
+    fi
+  fi
+  say "Choose where to use your face, then look into the camera while Howdy enrolls."
+  expect "Verification says 'Look into the camera and press the Copilot key.' and asks for no password;" \
+    "the key brings 'Scanning face…' and 'Identified face as $me', and the setup ends with 'Perfect!'."
+  attempt omarchy-setup-security-face
+  verdict
+}
+
+step_sudo_key() {
+  needs sudo || return
+  say "Type nothing. Look into the camera and press the Copilot key."
+  expect "'Press the Copilot key to use your face, or type your password.' above sudo's prompt;" \
+    "the key brings 'Scanning face…' and sudo prints 'granted'."
+  attempt 'sudo -k; sudo true && echo granted'
+  verdict
+}
+
+step_sudo_typed() {
+  needs sudo || return
+  say "Type a few letters without Enter, then press the Copilot key."
+  expect "The letters are dropped, 'Scanning face…' follows and sudo prints 'granted'."
+  attempt 'sudo -k; sudo true && echo granted'
+  verdict
+}
+
+step_sudo_password() {
+  needs sudo || return
+  say "Type your password and press Enter."
+  expect "sudo prints 'granted'. The key service logs that the prompt waited; Howdy logs nothing."
+  attempt 'sudo -k; sudo true && echo granted'
+  verdict
+}
+
+step_sudo_enter() {
+  needs sudo || return
+  say "Press Enter on the empty prompt, then type your password at the next one."
+  expect "'Sorry, try again.' and no scan, so Howdy logs nothing; then sudo prints 'granted'."
+  attempt 'sudo -k; sudo true && echo granted'
+  verdict
+}
+
+step_sudo_script() {
+  local status=0 lines
+
+  needs sudo || return
+  echo -e "  \e[2m\$ sudo -k; sudo -n true\e[0m"
+  sudo -k
+  sudo -n true 2>/dev/null || status=$?
+  if ! lines=$(journal_since_step); then
+    result skipped "the journal is not readable"
+  elif (( status != 0 )) && ! grep -q 'waits for the key\|Attempting facial' <<<"$lines"; then
+    result passed
+  else
+    logged
+    result failed "sudo -n ran or offered the face"
+  fi
+}
+
+step_polkit_key() {
+  needs polkit-1 || return
+  say "Type nothing. Look into the camera and press the Copilot key."
+  expect "The dialog's field says 'Face or Password' next to a camera; the key brings 'Scanning face...'," \
+    "the dialog closes and this terminal prints 'granted'."
+  attempt 'pkexec true && echo granted'
+  verdict
+}
+
+step_polkit_password() {
+  needs polkit-1 || return
+  say "Type your password into the dialog and press Enter."
+  expect "The dialog closes and this terminal prints 'granted'; Howdy logs nothing."
+  attempt 'pkexec true && echo granted'
+  verdict
+}
+
+step_conflict() {
+  needs sudo polkit-1 || return
+  say "sudo asks here, and two seconds later a polkit dialog opens. Once both wait, press the Copilot key once." \
+    "Then press Escape on the dialog and type your password here."
+  expect "A notification 'Face scan refused' names 'sudo true' and 'a polkit dialog', this terminal says" \
+    "'Face refused: another program is waiting for the Copilot key too', and nothing scans."
+  attempt '(sleep 2; pkexec true) & sudo -k; sudo true && echo granted; wait'
+  verdict
+}
+
+step_menu() {
+  say "With no prompt open, press the Copilot key, then answer below."
+  expect "Nothing opens; the key used to open the Omarchy menu. The key service logs nothing."
+  verdict
+}
+
+step_lock_key() {
+  needs lock || return
+  say "The screen locks and may go dark. Type nothing; look into the camera and press the Copilot key."
+  expect "The screen wakes, the field says 'Face or Password' with a camera, 'Scanning face…' shows and the lock opens."
+  lock_and_wait omarchy-system-lock
+  verdict
+}
+
+step_lock_failed() {
+  local attempts
+
+  needs lock || return
+  attempts=$(policy LOCK_ATTEMPTS 1)
+  say "The screen locks. Turn away from the camera or cover it, then press the Copilot key $attempts time(s)."
+  say "Unlock with your password."
+  expect "'No match', then 'Password (face failed)' without the camera; the key scans no more."
+  lock_and_wait omarchy-system-lock
+  verdict
+}
+
+step_lock_expired() {
+  local window
+
+  needs lock || return
+  if ! window=$(grep -m1 '^LOCK_WINDOW_MINUTES=' "$face_conf" 2>/dev/null); then
+    result skipped "$face_conf sets no LOCK_WINDOW_MINUTES"
+    return
+  fi
+  say "For this step the lock offers the face for one minute; sudo asks to change $face_conf and to change it back." \
+    "The screen locks. Wait more than a minute, press the Copilot key, then unlock with your password."
+  expect "'Password (face expired)' without the camera, and the key scans nothing."
+  if ! sudo sed -i 's/^LOCK_WINDOW_MINUTES=.*/LOCK_WINDOW_MINUTES=1/' "$face_conf"; then
+    result failed "could not shorten the window"
+    return
+  fi
+  restore_window=$window
+  lock_and_wait omarchy-system-lock
+  restore_policy
+  verdict
+}
+
+step_lock_suspend() {
+  needs lock || return
+  say "The machine suspends. Wake it, then press the Copilot key."
+  expect "The lock opens by face, as it did before the suspend."
+  lock_and_wait systemctl suspend
+  verdict
+}
+
+step_lid() {
+  needs sudo || return
+  if ! confirm "This step needs an external monitor. Close the lid and carry on there?"; then
+    result skipped "no external monitor"
+    return
+  fi
+  say "Type your password."
+  expect "No 'Press the Copilot key' line: the closed lid covers the camera, so sudo asks for the password alone."
+  attempt 'sudo -k; sudo true && echo granted'
+  verdict
+}
+
+if [[ ${1:-} == --list ]]; then
+  for name in "${names[@]}"; do
+    printf '%-16s %s\n' "$name" "${titles[$name]}"
+  done
+  exit 0
 fi
+
+selected=("$@")
+(( ${#selected[@]} )) || selected=("${names[@]}")
+for name in "${selected[@]}"; do
+  if [[ -z ${titles[$name]:-} ]]; then
+    echo "bin/run: unknown step: $name (bin/run --list names them)" >&2
+    exit 2
+  fi
+done
+
+# Ctrl+C ends the command a step runs, not the walk-through; at a question it
+# stops the walk-through. A shortened lock window is put back either way.
+trap : INT
+trap restore_policy EXIT
+
+for name in "${selected[@]}"; do
+  current=$name
+  ran+=("$name")
+  echo -e "\n\e[1;34m== $name: ${titles[$name]}\e[0m"
+  step_started=$(date +%s)
+  "step_${name//-/_}"
+  # A camera that is not ready or a stale checkout leaves nothing to try.
+  if (( $# == 0 )) && [[ $name == probe || $name == linked ]] && [[ ${results[$name]:-} == failed ]]; then
+    break
+  fi
+done
+
+summary

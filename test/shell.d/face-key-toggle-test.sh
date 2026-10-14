@@ -13,9 +13,8 @@ remove="$ROOT/bin/omarchy-remove-security-face"
 # names the same key by its xkb code, evdev's plus 8.
 evdev=$(sed -n 's/^KEY_F23 = \([0-9]*\)$/\1/p' "$key")
 [[ $evdev == 193 ]] || fail "the key service watches F23" "$evdev"
-grep -qxF 'hl.unbind("SUPER + SHIFT + code:201")' "$toggle" || fail "the toggle frees the Copilot key"
-grep -qxF 'o.bind("SUPER + SHIFT + code:201", "Confirm with your face", "omarchy-shell -q polkit faceKey")' "$toggle" ||
-  fail "the toggle binds the Copilot key to the polkit dialog"
+grep -qxF 'o.rebind("SUPER + SHIFT + code:201", "Confirm with your face", { ipc = "polkit.faceKey" })' "$toggle" ||
+  fail "the toggle rebinds the Copilot key to the polkit dialog's IPC call, the way upstream's bindings name the shell"
 (( evdev + 8 == 201 )) || fail "Hyprland binds the key root watches"
 utilities="$ROOT/default/hypr/bindings/utilities.lua"
 if [[ -f $utilities ]]; then

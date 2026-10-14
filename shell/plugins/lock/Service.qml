@@ -40,6 +40,19 @@ Item {
   property double fingerprintLastSettleMs: 0
   property double fingerprintResumedAtMs: 0
   property int fingerprintProbeStreak: 0
+  // While the lock has the displays off no new attempt starts, so the reader
+  // isn't held awake all night; any wake starts it again.
+  property bool fingerprintPaused: false
+  // The sleep watch is stopped while paused, so a sleep seen after the
+  // pre-suspend lock request is marked here instead.
+  property bool fingerprintSleptWhilePaused: false
+  // When the armed retry is due, so time spent blank counts toward it.
+  property double fingerprintRetryDueMs: 0
+  // The backoff the armed retry was set to; a wake shortens the timer to the
+  // remaining wait, so the input guard reads the tier from here instead.
+  property int fingerprintRetryBackoffMs: 0
+  // Outputs the lock last saw, so only a display arriving counts as a wake.
+  property int knownScreenCount: 0
   property bool previewVisible: false
   property string enteredPassword: ""
   property string pendingPassword: ""
@@ -211,9 +224,12 @@ Item {
     fingerprintLastSettleMs = 0
     fingerprintResumedAtMs = 0
     fingerprintProbeStreak = 0
+    fingerprintPaused = false
+    fingerprintSleptWhilePaused = false
     fingerprintRecheckTimer.stop()
     fingerprintRetryTimer.stop()
     fingerprintReachTimer.stop()
+    fingerprintResumeTimer.stop()
     if (passwordPam.active) passwordPam.abort()
     if (fingerprintPam.active) fingerprintPam.abort()
     faceRearmTimer.stop()
@@ -270,8 +286,46 @@ Item {
     root.monitorDpmsKnown = false
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
+    resumeFingerprint()
     nudgeFingerprint()
     syncFace()
+  }
+
+  // An attempt already running is left to finish under its own timeouts, so
+  // a slow claim still completes; only the next one waits for a wake.
+  function pauseFingerprint() {
+    if (fingerprintPaused) return
+    fingerprintPaused = true
+    fingerprintRetryTimer.stop()
+  }
+
+  // The retry keeps whatever backoff was armed, counting the time spent blank,
+  // so a failing reader still gets its idle window; after a sleep it recovers
+  // at once, as the sleep watch does.
+  function resumeFingerprint() {
+    if (!fingerprintPaused) return
+    fingerprintPaused = false
+    if (fingerprintSleptWhilePaused) {
+      fingerprintSleptWhilePaused = false
+      noteFingerprintResumed()
+      fingerprintRetryBackoffMs = FingerprintModel.MATCH_RETRY_MS
+      fingerprintRetryTimer.interval = FingerprintModel.MATCH_RETRY_MS
+    } else {
+      fingerprintRetryTimer.interval = Math.max(FingerprintModel.MATCH_RETRY_MS, fingerprintRetryDueMs - Date.now())
+    }
+    if (lockRequested && fingerprintConfigured && !fingerprintAuthenticating) fingerprintRetryTimer.restart()
+  }
+
+  // A resume can light the panel with no input to wake the lock, so after a
+  // lock request the reader comes back once a sleep is seen; the blank
+  // countdown then pauses it again if nothing else happens. The idle service
+  // repeats the same request without sleeping, so the sleep has to be seen.
+  function noteSleepRequested() {
+    if (!lockRequested || !fingerprintPaused) return
+    // logind holds a suspend for its inhibitor delay, at most 15 seconds here.
+    fingerprintResumeTimer.ticksLeft = 20
+    fingerprintResumeTimer.lastTickMs = Date.now()
+    fingerprintResumeTimer.restart()
   }
 
   // User activity advances retries without recreating a busy retry loop.
@@ -290,7 +344,7 @@ Item {
     if (fingerprintPam.active || fingerprintAuthenticating) return
     if (!fingerprintRetryTimer.running) return
     var now = Date.now()
-    if (!FingerprintModel.shouldNudge(now, fingerprintLastNudgeMs, fingerprintLastSettleMs, fingerprintRetryTimer.interval)) return
+    if (!FingerprintModel.shouldNudge(now, fingerprintLastNudgeMs, fingerprintLastSettleMs, fingerprintRetryBackoffMs)) return
     fingerprintLastNudgeMs = now
     armFingerprintRetry(FingerprintModel.MATCH_RETRY_MS)
   }
@@ -298,7 +352,9 @@ Item {
 
   function armFingerprintRetry(delayMs) {
     fingerprintRetryTimer.interval = delayMs
-    fingerprintRetryTimer.restart()
+    fingerprintRetryBackoffMs = delayMs
+    fingerprintRetryDueMs = Date.now() + delayMs
+    if (!fingerprintPaused) fingerprintRetryTimer.restart()
   }
 
   // Reset pre-sleep failures while the resume hook restarts fprintd.
@@ -325,6 +381,7 @@ Item {
   function runBlank() {
     root.displaysBlank = true
     root.monitorDpmsKnown = false
+    pauseFingerprint()
     if (!blankProcess.running) blankProcess.running = true
     // The check keeps waiting in the dark; a scan running into the blank stops.
     if (faceAuthenticating) {
@@ -386,12 +443,12 @@ Item {
     enteredPassword = ""
     pendingPassword = ""
     failedAttempts += 1
-    failureMessage = "Authentication failed (" + failedAttempts + ")"
+    failureMessage = I18n.t("lock.authenticationFailed").arg(I18n.formatNumber(failedAttempts))
     runWake()
   }
 
   function startFingerprint() {
-    if (!lockRequested || !sessionLock.secure || !fingerprintConfigured) return
+    if (!lockRequested || !sessionLock.secure || !fingerprintConfigured || fingerprintPaused) return
     if (fingerprintPam.active || fingerprintAuthenticating) return
 
     fingerprintAuthenticating = true
@@ -492,7 +549,7 @@ Item {
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
     } else if (message === FaceModel.REFUSED_MESSAGE) {
-      failureMessage = "Face refused"
+      failureMessage = I18n.t("lock.faceRefused")
       logEvent("face-refused: another prompt waits for the key")
     }
   }
@@ -538,10 +595,10 @@ Item {
     }
     if (result === PamResult.Error) {
       logEvent("face-error")
-      failureMessage = "Face unavailable"
+      failureMessage = I18n.t("lock.faceUnavailable")
     } else {
       logEvent("face-no-match")
-      failureMessage = "No match"
+      failureMessage = I18n.t("lock.faceNoMatch")
     }
     faceRearmTimer.restart()
   }
@@ -594,6 +651,10 @@ Item {
 
     WlSessionLockSurface {
       id: lockSurface
+      // Right-to-left languages read this window mirrored.
+      Binding { target: lockSurface.contentItem; property: "LayoutMirroring.enabled"; value: Commons.I18n.rightToLeft }
+      Binding { target: lockSurface.contentItem; property: "LayoutMirroring.childrenInherit"; value: true }
+
       color: Commons.Color.background
 
       LockView {
@@ -625,6 +686,10 @@ Item {
 
   PanelWindow {
     id: previewWindow
+    // Right-to-left languages read this window mirrored.
+    Binding { target: previewWindow.contentItem; property: "LayoutMirroring.enabled"; value: Commons.I18n.rightToLeft }
+    Binding { target: previewWindow.contentItem; property: "LayoutMirroring.childrenInherit"; value: true }
+
     visible: root.previewVisible
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
@@ -711,7 +776,7 @@ Item {
 
     // A completed(Error) follows; settling here keeps the LED off meanwhile.
     onError: function(error) {
-      root.settleFaceAttempt("face-error", "Face unavailable")
+      root.settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
     }
   }
 
@@ -746,7 +811,7 @@ Item {
     interval: FaceModel.ATTEMPT_TIMEOUT_MS
     repeat: false
     onTriggered: {
-      root.settleFaceAttempt("face-timeout", "Face unavailable")
+      root.settleFaceAttempt("face-timeout", I18n.t("lock.faceUnavailable"))
       root.syncFace()
     }
   }
@@ -779,7 +844,7 @@ Item {
     id: fingerprintSleepWatch
     interval: 1000
     repeat: true
-    running: root.lockRequested && root.fingerprintConfigured
+    running: root.lockRequested && root.fingerprintConfigured && (!root.fingerprintPaused || root.fingerprintAuthenticating)
     property double lastTickMs: 0
     onRunningChanged: lastTickMs = Date.now()
     onTriggered: {
@@ -787,6 +852,30 @@ Item {
       var slept = FingerprintModel.spannedSleep(now - lastTickMs, interval)
       lastTickMs = now
       if (slept) root.restartFingerprintAfterSleep()
+    }
+  }
+
+  // Timers stand still through a suspend, so the first tick after a resume
+  // sees the wall clock jump. Runs only for the seconds after a lock request
+  // that a suspend can take to begin.
+  Timer {
+    id: fingerprintResumeTimer
+    interval: 1000
+    repeat: true
+    property int ticksLeft: 0
+    property double lastTickMs: 0
+    onTriggered: {
+      var now = Date.now()
+      var slept = FingerprintModel.spannedSleep(now - lastTickMs, interval)
+      lastTickMs = now
+      if (slept && root.lockRequested && root.fingerprintPaused) {
+        stop()
+        root.fingerprintSleptWhilePaused = true
+        root.resumeFingerprint()
+        root.armBlankTimer()
+      } else if (slept || !root.fingerprintPaused || --ticksLeft <= 0) {
+        stop()
+      }
     }
   }
 
@@ -962,6 +1051,12 @@ Item {
       // for, so the blank state has to be given up here or a visible lock
       // wallpaper stays frozen until the next keypress.
       root.displaysBlank = false
+      var screens = root.realScreenCount()
+      if (screens > root.knownScreenCount) {
+        root.resumeFingerprint()
+        if (root.lockRequested) root.armBlankTimer()
+      }
+      root.knownScreenCount = screens
       root.requestSessionLock()
 
       // A monitor still coming up has no workspace, so cannot answer yet.
@@ -1027,6 +1122,7 @@ Item {
   }
 
   Component.onCompleted: {
+    knownScreenCount = realScreenCount()
     refreshBackground()
     refreshFingerprintStatus()
     checkStrandedLock()
@@ -1037,6 +1133,8 @@ Item {
 
     function lock(): string {
       if (!root.passwordPamConfigured) return "missing-pam"
+      // omarchy-system-sleep-lock asks for the lock before every suspend.
+      if (root.currentlyLocked()) root.noteSleepRequested()
       if (!root.currentlyLocked() && !root.beginLock()) return "failed"
       return "ok"
     }

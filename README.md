@@ -1,95 +1,71 @@
 # omarchy-dell-xps-face
 
-Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092): sudo, polkit and the lock screen unlock with a face, always behind a press of the Copilot key, never on presence alone. Developed as an overlay in upstream's layout so it can be sent upstream as one change.
+Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with the Windows Hello IR camera (Himax HM1092). sudo, polkit and the lock screen accept your face, but only after you press the Copilot key. Built as an overlay in Omarchy's layout, to go upstream as one pull request.
+
+## Install
+
+Until it is upstream, it runs on a checkout of Omarchy through Omarchy's own development tools, which means running Omarchy's development branch:
 
 ```
-git clone https://github.com/renuo/omarchy-dell-xps-face
+git clone https://github.com/renuo/omarchy-dell-xps-face && cd omarchy-dell-xps-face
+(cd packaging/hm1092-ir-camera && makepkg -si)      # the IR camera driver
+git clone https://github.com/basecamp/omarchy ~/Work/omarchy/omarchy-installer
+git clone https://github.com/omacom-io/omarchy-pkgs ~/Work/omarchy/omarchy-pkgs
+bin/apply-to-checkout ~/Work/omarchy/omarchy-installer
+omarchy dev pkg-test                                # install the checkout as packages
+omarchy dev link ~/Work/omarchy/omarchy-installer   # run Omarchy from the checkout, then reboot
+omarchy setup security face                         # enroll, and choose sudo and polkit, the lock screen, or both
 ```
 
-## What it adds
+`pkg-test` is needed besides the link because PAM, sudoers and systemd name the helpers by their `/usr/bin` paths. Remove an earlier clone of the lock or polkit plugin first (`omarchy plugin remove <you>.lock`), or it runs instead of the checkout's. `bin/run probe` checks the camera after the reboot.
 
-- `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, with `--driver` and `--device` for the layers a face setup needs.
-- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo and polkit, the lock screen, or both, whichever the setup is told, mirroring the fingerprint wizard. Wherever a password is asked, the Copilot key scans instead, and a typed password skips the camera.
-- `omarchy-face-key`, a socket-activated root service that reads the Copilot key from the keyboard itself, so no program can fake the press the way it could fake an Enter, and `default/hypr/toggles/face-key.lua`, which takes the key from the Omarchy menu and from every window. One press serves one waiting prompt; when two wait, neither gets it and a notification names both.
-- `omarchy-face-match`, the hidden `pam_exec` helper behind those PAM lines, with `etc/sudoers.d/omarchy-face-match` so the lock screen's user-level PAM can reach Howdy's root-only tree.
-- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", the Copilot key scans, "Scanning face…" and "No match" report what happened. A lock offers the face for one scan within an hour of locking, both set in `/etc/omarchy/face.conf`; past either the camera hint goes and the field says "Password (face failed)" or "Password (face expired)".
-- `packaging/hm1092-ir-camera`: the driver package the wizard needs. The sensor module and the bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
+Back to the release: `omarchy remove security face`, `omarchy dev unlink`, `sudo pacman -S omarchy omarchy-settings`.
 
-`docs/face-authentication.md` has the layers, contracts, known gaps and the exit plan for when mainline Linux catches up.
+## How it works
 
-## Status
+The Copilot key is the consent. Root reads it from the keyboard itself, so no program can press it for you, and the camera stays dark until you do. The password always works. If two prompts wait for the key at once, neither gets your face, and a notification names both.
 
-Verified on a Dell XPS 14 DA14260 on Omarchy 4.0.4 (Linux 7.2.5): the sensor streams, Howdy enrolls, and sudo, polkit and the lock screen unlock by face with Enter as the consent step. The Copilot key that replaces it is tested against fake keyboards and awaits its trial. Not yet upstreamed; the package is not in Omarchy's repository yet.
+<img src="docs/images/face-sudo.svg" alt="A person presses the Copilot key while sudo asks for the password in a terminal; the IR camera scans their face." width="480">
 
-## Layout
+sudo says "Press the Copilot key to use your face, or type your password." `sudo -n` and scripts never reach the camera.
 
-```
-bin/omarchy-*                      the commands, as they land in upstream bin/
-default/omarchy/omarchy-menu.jsonc the two menu rows (also usable as a user menu extension)
-default/hypr/toggles/face-key.lua  the Hyprland binding that makes the Copilot key the face key
-etc/sudoers.d/                     the grant the lock screen's face helper runs through
-install/hardware/intel/            the hardware leaf that installs the driver package
-install/user/first-run/            the first-run invitation hook
-packaging/hm1092-ir-camera/        PKGBUILD, DKMS sources, relay, units, udev and WirePlumber rules
-shell/plugins/lock/                upstream's lock plugin with the face context added
-shell/plugins/polkit/              upstream's polkit agent, scanning the face on the Copilot key
-test/shell, test/shell.d/          upstream's runner and assertion protocol, with this overlay's suites
-docs/                              design notes
-bin/check, bin/setup, bin/run      lint and test, install dev deps, probe this machine
-bin/apply-to-checkout              copy the Omarchy side into an Omarchy checkout
-bin/patch-shell-plugins            regenerate the two plugins from any Omarchy shell tree
-```
+<img src="docs/images/face-polkit.svg" alt="A person presses the Copilot key while the authentication dialog says Face or Password; the IR camera scans their face." width="480">
+
+The authentication dialog's field says "Face or Password".
+
+<img src="docs/images/face-lock.svg" alt="A person presses the Copilot key at the lock screen, which says Face or Password; the IR camera scans their face." width="480">
+
+A lock offers one scan within an hour of locking, both set in `/etc/omarchy/face.conf`; then only the password.
+
+`docs/face-authentication.md` has the layers, contracts and known gaps.
 
 ## Develop
 
 ```
-bash bin/setup        # shellcheck, jq, and the executable bits
-bin/check             # shellcheck, the relay's unit tests, ./test/shell
-bin/run               # what the setup would see on this machine
+bash bin/setup                                           # shellcheck, jq, executable bits
+bin/check                                                # lint and all tests
+bin/apply-to-checkout ~/Work/omarchy/omarchy-installer   # after a change, then omarchy restart shell
+omarchy dev pkg-test                                     # after a change to the helpers or the sudoers rule
+bin/run                                                  # every manual test, step by step; --list names them
 ```
 
-Tests stub the world and run the real scripts: sysfs fixture trees for the hardware predicate and the relay, scratch copies of the wizards and the helper with their fixed `/etc` and `/usr` paths retargeted, driven through `sudo` and `python3` stubs that only accept the expected protocol, a stubbed `media-ctl` for the relay's graph discovery, and node for the plugins' JavaScript models. The relay's conversion tests need `python-numpy`.
+The checkout's diff is the pull request; `I18N_STRUCTURAL=1 ./test/shell` there is upstream's pull-request gate, and upstream's sync translates the new English strings. `bin/patch-shell-plugins` regenerates `shell/plugins` from a clean upstream checkout when upstream's plugins move. Dev scripts in `bin/` never take a system command's name, since a checkout's `bin/` may be first on PATH.
 
-## Try it on an installed Omarchy
-
-Until the pieces ship with Omarchy, each layer is put in place by hand. The driver first:
+## Layout
 
 ```
-(cd packaging/hm1092-ir-camera && makepkg -si)   # DKMS builds the modules for the running kernel
-sudo reboot                                      # ipu-bridge builds the camera graph at boot
-bin/run                                          # prints the relay device when everything is up
-sudo /usr/lib/hm1092-ir-camera/hm1092-relay --probe   # otherwise: what resolved and what did not
+bin/omarchy-*                      the commands: hardware check, setup and remove wizards, PAM helper, key service
+default/                           the menu rows, the Copilot key binding, the English strings
+etc/sudoers.d/                     the grant the lock screen's helper runs through
+install/                           the hardware leaf for the driver package and the first-run invitation
+shell/plugins/                     upstream's lock and polkit plugins with the face added
+packaging/hm1092-ir-camera/        the driver: DKMS sensor module and bridge entry, grayscale relay
+test/shell.d/                      the suites; overlay-* stay here, the rest go upstream
 ```
 
-Then the helper, its grant, and the enrollment:
+## Status
 
-```
-sudo install -m 755 bin/omarchy-face-match bin/omarchy-face-key /usr/bin/
-sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/ && sudo visudo -c
-OMARCHY_PATH="$PWD" PATH="$PWD/bin:$PATH" omarchy-setup-security-face   # OMARCHY_PATH: the toggle comes from here
-```
-
-Then the shell plugins, generated against the installed version so they match it:
-
-```
-bin/patch-shell-plugins /usr/share/omarchy/shell /tmp/face-shell
-omarchy plugin clone omarchy.lock          # ~/.config/omarchy/plugins/<you>.lock/
-omarchy plugin clone omarchy.polkit
-cp /tmp/face-shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
-cp /tmp/face-shell/plugins/polkit/{PolkitAgent.qml,PolkitModel.js} ~/.config/omarchy/plugins/$USER.polkit/
-omarchy restart shell
-omarchy shell lock status                  # face: true once enrolled, faceState: offered while locked
-```
-
-## Upstream
-
-```
-git clone https://github.com/basecamp/omarchy ~/Work/omarchy
-bin/apply-to-checkout ~/Work/omarchy
-cd ~/Work/omarchy && ./test/all && omarchy dev link ~/Work/omarchy
-```
-
-The plugin files in `shell/plugins` are generated from upstream's by `bin/patch-shell-plugins`; regenerate them when upstream's move. The package itself is not part of the checkout; it belongs in Omarchy's package repository next to `intel-ipu7-camera`.
+Verified on a Dell XPS 14 DA14260 (Omarchy 4.0.4, Linux 7.2.5) with Enter as the consent; the Copilot key awaits its trial on the device. Applied to upstream's `quattro` at 84cfb93 it passes the translation gate and adds no failing test. The driver package belongs in Omarchy's package repository, next to `intel-ipu7-camera`.
 
 ## License
 

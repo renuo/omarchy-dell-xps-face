@@ -60,7 +60,7 @@ Item {
   readonly property int cardWidth: fingerprintMode ? cardHeight : Math.min(Style.space(312), Math.max(Style.space(260), panel.width - Style.gapsOut * 2))
 
   function authorizationLabel(message) {
-    return PolkitModel.authorizationLabel(message)
+    return message ? PolkitModel.authorizationLabel(message, I18n.t) : I18n.t("polkit.authenticationNeeded")
   }
 
   function loadPamConfig(raw) {
@@ -89,7 +89,7 @@ Item {
     var flow = polkitAgent.flow
     if (!flow) return
 
-    currentMessage = String(flow.message || "Authentication is needed...")
+    currentMessage = String(flow.message || "")
     currentPrompt = String(flow.inputPrompt || "")
     currentSupplementary = String(flow.supplementaryMessage || "")
     responseRequired = !!flow.isResponseRequired
@@ -259,6 +259,10 @@ Item {
 
   PanelWindow {
     id: panel
+    // Right-to-left languages read this window mirrored.
+    Binding { target: panel.contentItem; property: "LayoutMirroring.enabled"; value: Commons.I18n.rightToLeft }
+    Binding { target: panel.contentItem; property: "LayoutMirroring.childrenInherit"; value: true }
+
     visible: root.dialogVisible
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
@@ -376,9 +380,9 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: root.errorFlash ? (root.scanning ? "No match" : "Wrong")
-              : (root.submitted ? (root.scanning ? "Scanning face..." : "Checking...")
-              : (root.faceOffered ? "Face or Password" : "Enter password"))
+            text: root.errorFlash ? (root.scanning ? I18n.t("polkit.faceNoMatch") : I18n.t("polkit.wrong"))
+              : (root.submitted ? (root.scanning ? I18n.t("polkit.scanningFace") : I18n.t("polkit.checking"))
+              : (root.faceOffered ? I18n.t("polkit.faceOrPassword") : I18n.t("polkit.enterPassword")))
             color: root.errorFlash ? Commons.Color.polkit.textError : root.foreground
             opacity: root.errorFlash ? 1 : 0.36
             font.family: root.fontFamily

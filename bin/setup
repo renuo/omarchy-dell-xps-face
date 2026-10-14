@@ -14,6 +14,6 @@ cat <<'EOF'
 
 Ready. Next steps:
   bin/check                                  lint and run the tests
-  bin/run                                    probe this machine's IR camera
-  bin/apply-to-checkout ~/Work/omarchy       copy the overlay into an Omarchy checkout
+  bin/apply-to-checkout <omarchy checkout>   copy the overlay into an Omarchy checkout
+  bin/run                                    walk through the manual tests on the linked checkout (README: Install)
 EOF

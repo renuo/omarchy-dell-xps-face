@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 340" width="560" height="340" role="img" aria-labelledby="t d">
+<title id="t">polkit with the Copilot key</title>
+<desc id="d">A person presses the Copilot key while the authentication dialog says Face or Password; the IR camera scans their face.</desc>
+<defs>
+<filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<clipPath id="display"><rect x="52" y="44" width="256" height="154" rx="4"/></clipPath>
+</defs>
+<rect x="1" y="1" width="558" height="338" rx="18" fill="#f3f5f9" stroke="#dfe4ec"/>
+<rect x="40" y="30" width="280" height="182" rx="12" fill="#2b303b"/>
+<g clip-path="url(#display)"><defs><linearGradient id="desk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#40557a"/><stop offset="1" stop-color="#26324a"/></linearGradient></defs>
+<rect x="52" y="44" width="256" height="154" fill="url(#desk)"/>
+<rect x="74" y="58" width="212" height="128" rx="10" fill="#f8f9fb"/>
+<text x="180" y="82" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#1f2937">Authentication required</text>
+<text x="180" y="100" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#4b5563">Authentication is needed to run</text>
+<text x="180" y="113" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#4b5563">/usr/bin/true as the super user</text>
+<rect x="90" y="124" width="180" height="26" rx="6" fill="#ffffff" stroke="#3b82f6" stroke-width="1.4"/>
+<g fill="none" stroke="#4b5563" stroke-width="1.4" stroke-linejoin="round"><rect x="98" y="132" width="14" height="10" rx="2"/><circle cx="105" cy="137" r="2.6"/><path d="M102 132 l1.5 -2 h3 l1.5 2"/></g>
+<text x="120" y="141.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#6b7280">Face or Password</text>
+<text x="180" y="172" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" font-weight="600" fill="#d97706">Scanning face...</text></g>
+<circle cx="174" cy="37" r="3" fill="#0d1117" stroke="#6b7280" stroke-width="0.8"/>
+<circle cx="186" cy="37" r="2.2" fill="#ff4d5e" filter="url(#glow)"/>
+<rect x="36" y="210" width="288" height="6" rx="2" fill="#1f232b"/>
+<polygon points="40,216 320,216 346,262 14,262" fill="#3a404c"/>
+<rect x="14" y="261" width="332" height="7" rx="3" fill="#2b303b"/>
+<rect x="64.0" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="79.7" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="95.3" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="111.0" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="126.7" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="142.3" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="158.0" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="173.7" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="189.3" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="205.0" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="220.7" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="236.3" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="252.0" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="267.7" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="283.3" y="222" width="12.7" height="8" rx="1.5" fill="#545b69"/><rect x="58.0" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="74.5" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="90.9" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="107.4" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="123.9" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="140.3" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="156.8" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="173.3" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="189.7" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="206.2" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="222.7" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="239.1" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="255.6" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="272.1" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="288.5" y="233" width="13.5" height="8" rx="1.5" fill="#545b69"/><rect x="52.0" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="72.6" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="93.2" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="113.8" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="134.5" y="244" width="83.6" height="8" rx="1.5" fill="#545b69"/><rect x="221.0" y="244" width="20.3" height="8" rx="1.5" fill="#f59f00" filter="url(#glow)"/><rect x="244.3" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="264.9" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/><rect x="285.5" y="244" width="17.6" height="8" rx="1.5" fill="#545b69"/>
+<path d="M231.175 253 L243.175 281" stroke="#9a6200" stroke-width="1"/>
+<text x="247.175" y="292" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9a6200">Copilot key</text>
+<path d="M 400 214 Q 330 222 242.175 237" fill="none" stroke="#4b5a78" stroke-width="15" stroke-linecap="round"/>
+<circle cx="234.175" cy="237" r="8" fill="#5b6b8a"/>
+<path d="M 376 288 C 376 220, 410 176, 458 176 C 506 176, 540 220, 540 288 Z" fill="#5b6b8a"/>
+<circle cx="458" cy="116" r="38" fill="#5b6b8a"/>
+<g fill="none" stroke="#ff4d5e" stroke-width="3.5" stroke-linecap="round">
+<path d="M410 84 v-14 h14"/><path d="M492 70 h14 v14"/><path d="M410 148 v14 h14"/><path d="M492 162 h14 v-14"/>
+</g>
+<text x="280" y="322" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#1f2937"><tspan font-weight="700">polkit</tspan><tspan dx="4" fill="#9aa3b2">·</tspan><tspan dx="4">the Copilot key answers the authentication dialog</tspan></text>
+</svg>

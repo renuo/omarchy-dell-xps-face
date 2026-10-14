@@ -5,9 +5,8 @@
 
 shell/plugins/lock and shell/plugins/polkit here are upstream's files with the
 face context and the face offer added at fixed anchors. Running this against
-upstream's tree regenerates them after upstream moves; running it against
-/usr/share/omarchy/shell produces the same change for the installed version,
-for clones made with `omarchy plugin clone`.
+upstream's tree regenerates them after upstream moves. The face's words come
+from default/i18n/en/shell.json, like every other string the shell shows.
 """
 
 import pathlib
@@ -82,11 +81,11 @@ function faceState(configured, attemptsUsed, expired, policy) {
   return "offered"
 }
 
-function placeholderText(state, fallback) {
-  if (state === "offered") return "Face or Password"
-  if (state === "exhausted") return "Password (face failed)"
-  if (state === "expired") return "Password (face expired)"
-  return fallback
+function placeholderText(state, t) {
+  if (state === "offered") return t("lock.faceOrPassword")
+  if (state === "exhausted") return t("lock.passwordFaceFailed")
+  if (state === "expired") return t("lock.passwordFaceExpired")
+  return t("lock.enterPassword")
 }
 
 if (typeof module !== "undefined") {
@@ -141,7 +140,7 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
     } else if (message === FaceModel.REFUSED_MESSAGE) {
-      failureMessage = "Face refused"
+      failureMessage = I18n.t("lock.faceRefused")
       logEvent("face-refused: another prompt waits for the key")
     }
   }
@@ -187,10 +186,10 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
     }
     if (result === PamResult.Error) {
       logEvent("face-error")
-      failureMessage = "Face unavailable"
+      failureMessage = I18n.t("lock.faceUnavailable")
     } else {
       logEvent("face-no-match")
-      failureMessage = "No match"
+      failureMessage = I18n.t("lock.faceNoMatch")
     }
     faceRearmTimer.restart()
   }
@@ -211,7 +210,7 @@ FACE_PAM = '''
 
     // A completed(Error) follows; settling here keeps the LED off meanwhile.
     onError: function(error) {
-      root.settleFaceAttempt("face-error", "Face unavailable")
+      root.settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
     }
   }
 '''
@@ -221,7 +220,7 @@ FACE_TIMER = '''  Timer {
     interval: FaceModel.ATTEMPT_TIMEOUT_MS
     repeat: false
     onTriggered: {
-      root.settleFaceAttempt("face-timeout", "Face unavailable")
+      root.settleFaceAttempt("face-timeout", I18n.t("lock.faceUnavailable"))
       root.syncFace()
     }
   }
@@ -324,7 +323,7 @@ FACE_KEY = '''  // The Copilot key, which Hyprland hands to the shell instead of
     return "scanning"
   }
 
-  %(ipc)s {
+  ShellIpc {
     target: "polkit"
 
     function faceKey(): string {
@@ -404,13 +403,13 @@ def patch_lock(src, dst):
         "  property bool fingerprintConfigured: false\n"
         "  // What the lock offers: \"\" without a face, \"offered\", \"exhausted\" or \"expired\".\n"
         "  property string faceState: \"\"\n  property bool faceAuthenticating: false\n")
-    view = once(view, '  readonly property string placeholderText: "Enter Password"\n',
-        '  readonly property string placeholderText: FaceModel.placeholderText(faceState, "Enter Password")\n'
+    view = once(view, '  readonly property string placeholderText: Commons.I18n.t("lock.enterPassword")\n',
+        '  readonly property string placeholderText: FaceModel.placeholderText(faceState, Commons.I18n.t)\n'
         '  readonly property bool faceIconShown: faceState === "offered" || faceAuthenticating\n')
     view = once(view, "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && failureMessage.length === 0\n",
         "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && !faceAuthenticating && failureMessage.length === 0\n")
-    view = once(view, '        text: root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n',
-        '        text: root.faceAuthenticating ? "Scanning face…" : root.authenticatingPassword ? "Checking…" : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n')
+    view = once(view, '        text: root.authenticatingPassword ? Commons.I18n.t("lock.checking") : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n',
+        '        text: root.faceAuthenticating ? Commons.I18n.t("lock.scanningFace") : root.authenticatingPassword ? Commons.I18n.t("lock.checking") : (root.failureMessage.length > 0 ? root.failureMessage : root.placeholderText)\n')
     view = sub_once(view, r"^(        color: )root\.authenticatingPassword \? ", lambda m: m.group(1) + "(root.authenticatingPassword || root.faceAuthenticating) ? ")
     view = once(view, "        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0\n",
         "        font.italic: !root.authenticatingPassword && !root.faceAuthenticating && root.failureMessage.length > 0\n")
@@ -460,16 +459,15 @@ def patch_polkit(src, dst):
         "    errorFlash = false\n    submitted = false\n    scanning = false\n    passwordInput.text = \"\"\n")
     agent = once(agent, "    submitted = true\n    errorFlash = false\n    flow.submit(passwordInput.text)\n",
         "    scanning = false\n    submitted = true\n    errorFlash = false\n    flow.submit(passwordInput.text)\n")
-    ipc = "ShellIpc" if (src.parent.parent / "Commons" / "ShellIpc.qml").exists() else "IpcHandler"
-    agent = once(agent, "  function cancelRequest() {\n", FACE_KEY % {"ipc": ipc} + "  function cancelRequest() {\n")
+    agent = once(agent, "  function cancelRequest() {\n", FACE_KEY + "  function cancelRequest() {\n")
     agent = once(agent, '          text: "\\uf023"\n',
         '          text: root.faceOffered || root.scanning ? "\\uf030" : "\\uf023"\n          textFormat: Text.PlainText\n')
-    agent = once(agent, '            text: root.errorFlash ? "Wrong" : (root.submitted ? "Checking..." : "Enter password")\n',
-        '            text: root.errorFlash ? (root.scanning ? "No match" : "Wrong")\n'
-        '              : (root.submitted ? (root.scanning ? "Scanning face..." : "Checking...")\n'
-        '              : (root.faceOffered ? "Face or Password" : "Enter password"))\n')
+    agent = once(agent, '            text: root.errorFlash ? I18n.t("polkit.wrong") : (root.submitted ? I18n.t("polkit.checking") : I18n.t("polkit.enterPassword"))\n',
+        '            text: root.errorFlash ? (root.scanning ? I18n.t("polkit.faceNoMatch") : I18n.t("polkit.wrong"))\n'
+        '              : (root.submitted ? (root.scanning ? I18n.t("polkit.scanningFace") : I18n.t("polkit.checking"))\n'
+        '              : (root.faceOffered ? I18n.t("polkit.faceOrPassword") : I18n.t("polkit.enterPassword")))\n')
 
-    model = once(model, "function authorizationLabel(message) {\n", FACE_PAM_CONFIG + "function authorizationLabel(message) {\n")
+    model = once(model, "function authorizationLabel(", FACE_PAM_CONFIG + "function authorizationLabel(")
     model = once(model, "    fingerprintConfiguredFromPamConfig: fingerprintConfiguredFromPamConfig,\n",
         "    fingerprintConfiguredFromPamConfig: fingerprintConfiguredFromPamConfig,\n    faceConfiguredFromPamConfig: faceConfiguredFromPamConfig,\n")
 

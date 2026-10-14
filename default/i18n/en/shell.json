@@ -1,0 +1,12 @@
+{
+  "lock.faceNoMatch": "No match",
+  "lock.faceOrPassword": "Face or Password",
+  "lock.faceRefused": "Face refused",
+  "lock.faceUnavailable": "Face unavailable",
+  "lock.passwordFaceExpired": "Password (face expired)",
+  "lock.passwordFaceFailed": "Password (face failed)",
+  "lock.scanningFace": "Scanning face…",
+  "polkit.faceNoMatch": "No match",
+  "polkit.faceOrPassword": "Face or Password",
+  "polkit.scanningFace": "Scanning face..."
+}

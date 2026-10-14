@@ -43,16 +43,20 @@ assertEqual(model.faceState(true, 2, false, policy), 'exhausted', 'the spent sca
 assertEqual(model.faceState(true, 2, true, policy), 'exhausted', 'spent scans are what the lock reports when both apply')
 assertEqual(model.faceState(true, 0, true, policy), 'expired', 'the closed window ends the offer')
 
+// The model names catalog keys; English comes from the catalog, and a key
+// the face did not add, like upstream's own lock.enterPassword, stays upstream's.
+const catalog = JSON.parse(require('fs').readFileSync(path.join(root, 'default/i18n/en/shell.json'), 'utf8'))
+const t = (key) => catalog[key] || key
 const placeholders = {
   offered: 'Face or Password',
   exhausted: 'Password (face failed)',
-  expired: 'Password (face expired)',
-  '': 'Enter Password'
+  expired: 'Password (face expired)'
 }
 for (const [state, text] of Object.entries(placeholders)) {
-  assertEqual(model.placeholderText(state, 'Enter Password'), text, `the empty field reads "${text}" when the face state is "${state}"`)
+  assertEqual(model.placeholderText(state, t), text, `the empty field reads "${text}" when the face state is "${state}"`)
   assert(text.length <= 23, `"${text}" fits the field beside the fingerprint hint`)
 }
+assertEqual(model.placeholderText('', (key) => key), 'lock.enterPassword', 'without a face the field keeps upstream\'s own prompt')
 JS
 
 # function_has <name> <literal>: the QML function's body contains the literal.
@@ -83,19 +87,19 @@ function_has runWake 'syncFace()' || fail "waking the display re-checks the offe
 grep -q 'onFaceConfiguredChanged: syncFace()' "$service" || fail "enrolling or removing the face re-checks the offer"
 grep -q 'onPamMessage: root.noteFaceMessage(message)' "$service" || fail "the lock follows the helper's lines"
 function_has noteFaceMessage 'if (message === FaceModel.SCAN_MESSAGE) {' || fail "the helper's scan line marks the scan's start"
-function_has noteFaceMessage 'failureMessage = "Face refused"' || fail "a refused key is reported in the field"
+function_has noteFaceMessage 'failureMessage = I18n.t("lock.faceRefused")' || fail "a refused key is reported in the field"
 awk '/function runBlank\(\) \{/{f=1} f && /if \(faceAuthenticating\) \{/{found=1} f && /^  \}/{exit} END{exit !found}' "$service" ||
   fail "blanking the display stops a running scan, not the waiting check"
 { grep -q 'interval: FaceModel.ATTEMPT_TIMEOUT_MS' "$service" && function_has noteFaceMessage 'faceAbortTimer.restart()'; } ||
   fail "a scan is bounded by the model's timeout from its start"
 function_has handleFaceFinished 'if (!scanned) {' || fail "a check that ends without a scan is no attempt"
-{ function_has handleFaceFinished 'failureMessage = "No match"' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
+{ function_has handleFaceFinished 'failureMessage = I18n.t("lock.faceNoMatch")' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
   fail "a miss is reported in the field and the check waits again after a pause"
 grep -q 'interval: FaceModel.REARM_DELAY_MS' "$service" || fail "the pause comes from the model"
 grep -Pzo 'interval: 30000\s*repeat: true\s*running: root\.lockRequested && root\.faceConfigured\s*onTriggered: root\.syncFace\(\)' "$service" >/dev/null ||
   fail "the offer is re-checked while the display stays on"
 { grep -q 'face: root.faceConfigured' "$service" && grep -q 'faceArmed: facePam.active' "$service"; } || fail "the lock status reports enrollment and the waiting check"
-grep -q '"Scanning face…"' "$view" || fail "a running scan is shown in the field"
+grep -qF 'Commons.I18n.t("lock.scanningFace")' "$view" || fail "a running scan is shown in the field"
 { grep -q 'id: faceIcon' "$view" && grep -q 'Math.max(root.fingerprintReserve, root.faceReserve)' "$view"; } || fail "the view shows a face hint and keeps the dots clear of it"
 pass "the lock keeps a face check waiting for the Copilot key while it offers the face and never scans on its own"
 
@@ -123,7 +127,7 @@ grep -q 'faceState: root.faceState$' "$service" || fail "the locked view follows
 pass "each lock offers the face for a bounded number of scans within a bounded time"
 
 grep -q 'import "FaceModel.js" as FaceModel' "$view" || fail "the view reads its texts from the model"
-grep -q 'placeholderText: FaceModel.placeholderText(faceState, "Enter Password")' "$view" ||
+grep -qF 'placeholderText: FaceModel.placeholderText(faceState, Commons.I18n.t)' "$view" ||
   fail "the empty field names what unlocks the screen in each face state"
 grep -q 'readonly property bool faceIconShown: faceState === "offered" || faceAuthenticating' "$view" ||
   fail "the camera hint shows only while the face is offered or scanning"

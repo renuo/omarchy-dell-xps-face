@@ -36,8 +36,8 @@ JS
 grep -q 'property bool faceConfigured: false' "$agent" || fail "the agent tracks face enrollment from the PAM stack"
 grep -q 'faceConfigured = PolkitModel.faceConfiguredFromPamConfig(raw)' "$agent" || fail "the agent reads face from the same PAM file as fingerprint"
 grep -q 'readonly property bool faceOffered: faceConfigured && !laptopClosed && dialogVisible && responseRequired' "$agent" || fail "face is offered only while PAM waits for the password with the lid open"
-grep -q '"Face or Password"' "$agent" || fail "the empty field offers the face"
-grep -q '"Scanning face..."' "$agent" || fail "a scan reads as scanning"
+grep -qF 'I18n.t("polkit.faceOrPassword")' "$agent" || fail "the empty field offers the face"
+grep -qF 'I18n.t("polkit.scanningFace")' "$agent" || fail "a scan reads as scanning"
 grep -q 'root.faceOffered || root.scanning ? "\\uf030" : "\\uf023"' "$agent" || fail "the padlock becomes a camera while face is offered or scanning"
 # Upstream's qml-text-format suite: a Text whose text is a binding says how to render it.
 grep -A1 -F 'root.faceOffered || root.scanning ? "\uf030" : "\uf023"' "$agent" | grep -q 'textFormat: Text.PlainText' ||
@@ -61,7 +61,7 @@ function_has scanFace 'if (!faceOffered || !flow || !flow.isResponseRequired) re
 function_has scanFace 'scanning = true' || fail "the key's answer reads as a scan"
 grep -Pzo '(ShellIpc|IpcHandler) \{\s*target: "polkit"\s*function faceKey\(\): string \{\s*return root\.scanFace\(\)' "$agent" >/dev/null ||
   fail "the dialog answers the key at the polkit IPC target"
-grep -qF '"omarchy-shell -q polkit faceKey"' "$ROOT/default/hypr/toggles/face-key.lua" || fail "Hyprland hands the key to that target"
+grep -qF '{ ipc = "polkit.faceKey" }' "$ROOT/default/hypr/toggles/face-key.lua" || fail "Hyprland hands the key to that target"
 pass "the Copilot key, handed over by Hyprland, starts the scan; Enter submits only the password"
 
 qmllint=/usr/lib/qt6/bin/qmllint

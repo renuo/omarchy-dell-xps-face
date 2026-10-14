@@ -1,0 +1,8 @@
+{
+  "setup.security.face": {
+    "label": "Face"
+  },
+  "remove.security.face": {
+    "label": "Face"
+  }
+}

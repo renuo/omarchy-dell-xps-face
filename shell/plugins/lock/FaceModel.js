@@ -54,11 +54,11 @@ function faceState(configured, attemptsUsed, expired, policy) {
   return "offered"
 }
 
-function placeholderText(state, fallback) {
-  if (state === "offered") return "Face or Password"
-  if (state === "exhausted") return "Password (face failed)"
-  if (state === "expired") return "Password (face expired)"
-  return fallback
+function placeholderText(state, t) {
+  if (state === "offered") return t("lock.faceOrPassword")
+  if (state === "exhausted") return t("lock.passwordFaceFailed")
+  if (state === "expired") return t("lock.passwordFaceExpired")
+  return t("lock.enterPassword")
 }
 
 if (typeof module !== "undefined") {
