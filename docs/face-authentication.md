@@ -1,6 +1,6 @@
 # Face authentication on the Dell XPS IR camera
 
-How Omarchy turns the Windows Hello IR camera of the Dell XPS 14 (DA14260), XPS 16 (DA16260) and XPS 13 (9350, DX13260) into a second authentication method, and which layer each command owns. The user-facing pieces follow the fingerprint wizard; the driver layer ships as a package of its own until mainline catches up.
+How Omarchy turns the Windows Hello IR camera of the Dell XPS 14 (DA14260), XPS 16 (DA16260) and XPS 13 (9350, DX13260) into a second authentication method, and which layer each command owns. The user-facing pieces follow the fingerprint wizard, the lock screen gains a face context next to its fingerprint one, and the driver layer ships as a package of its own until mainline catches up.
 
 ## Hardware
 
@@ -18,7 +18,7 @@ Omarchy's kernel (`linux-omarchy` 7.2) has no sensor driver, and its in-tree `ip
 | Install on matching machines | `install/hardware/intel/ipu7-ir-camera.sh`, gated on the predicate | Done; needs the package in Omarchy's repository |
 | Face matching | Howdy from the AUR, pointed at that device; `pam_exec.so` runs `omarchy-face-match` around Howdy's `compare.py` | Done by the wizard; enrolled on the XPS 14 |
 | sudo and polkit | `auth sufficient` behind the clamshell gate, like fingerprint | Done by the wizard |
-| Lock screen | `/etc/pam.d/omarchy-lock-face`, read by a face-aware `omarchy.lock` plugin | PAM service written; plugin pending |
+| Lock screen | `/etc/pam.d/omarchy-lock-face`, a face context in `shell/plugins/lock`, and `etc/sudoers.d/omarchy-face-match` for the helper's privileged half | Written and unit-tested; awaiting a trial on the XPS 14 |
 
 ## Contracts
 
@@ -42,14 +42,24 @@ Omarchy's kernel (`linux-omarchy` 7.2) has no sensor driver, and its in-tree `ip
 
 Testing seams: `HM1092_SYS_ROOT` and `HM1092_DEV_ROOT` retarget sysfs and `/dev` for the relay and the LED helper; `media-ctl` and `v4l2loopback-ctl` are stubbed on `PATH`. `packaging/hm1092-ir-camera/tests/test_relay.py` pins the ctypes layouts against the kernel headers and covers graph parsing, loopback lookup and creation, the LED budget, the configuration and the conversion; `test/shell.d/hm1092-ir-camera-package-test.sh` runs them and drives `--probe` and the LED helper through the seams.
 
+## Lock screen
+
+The lock is Omarchy's Quickshell plugin `omarchy.lock`, whose PAM conversations run in-process as the session user. `shell/plugins/lock` here is upstream's plugin with a third context added:
+
+- `facePam` runs the `omarchy-lock-face` service. `faceConfigured` follows `/etc/pam.d/omarchy-lock-face` through a `FileView`, the way the password context follows its file: the setup writes it only after a verified enrollment and the removal deletes it.
+- One attempt per wake. `startFace()` runs when the session lock turns secure and from `runWake()`, which every key, cursor move and unlock path already calls; `FaceModel.shouldAttempt` collapses a burst of wake events into one attempt per three seconds. There is no retry timer, unlike fingerprint's 250 ms re-arm: Howdy's own timeout ends the attempt, `runBlank()` aborts a running one, and `faceAbortTimer` bounds a conversation that never completes. The camera and its invisible flood LED therefore run only while someone is plausibly in front of the screen.
+- The view pins a camera hint inside the field's left edge, brighter while an attempt runs, opposite the fingerprint hint; the password dots keep clear of both.
+- The user-level conversation cannot read Howdy's root-only tree, so `omarchy-face-match` re-executes its packaged copy through `etc/sudoers.d/omarchy-face-match`: `%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-face-match ""`, the same shape as upstream's `omarchy-theme-browser` and `omarchy-dns` grants. The empty argument list forbids arguments, the privileged half takes the account from `SUDO_USER`, the unprivileged half first checks that `PAM_USER` is the session user, and the outcome is a verdict for PAM, never a session.
+
+To try it on an installed Omarchy before the plugin is upstreamed: install the sudoers rule with `sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/`, clone the plugin with `omarchy plugin clone omarchy.lock`, copy the three lock files over the clone (the patched files for the installed 4.0.4 plugin differ from upstream's only in the `Color` namespace), and `omarchy restart shell`. `omarchy shell lock status` then reports `face` and `faceAuthenticating`, and the shell log carries `face-attempt`, `face-matched`, `face-no-match`, `face-timeout` and `face-aborted` events.
+
 ## Known gaps
 
 - The driver package has run on one XPS 14 so far (Linux 7.2.5, `intel-ipu7-camera` 1.0.6). If another machine's sensor fails to probe or stream, meros/hm1092-linux is the fallback sensor module (clean, mainline-style, both ACPI ids, but no hardware flip, so `ROTATE180=1`).
 - The AUR package `intel-ipu7-ir-dkms` wraps the same fix pack but also replaces `intel_cvs` and ships the fix pack's Howdy patch; on Omarchy it would collide with `intel-ipu7-camera`, which is why this package takes only the sensor module.
-- The relay device is readable by the active seat user through the default `uaccess` tag, like any camera. Frames cannot be injected because the relay holds the producer side, but reading it is a privacy question the lock-screen work should settle (a dedicated group, or root-only with a privileged helper).
-- The lock plugin only starts a `omarchy-lock-fingerprint` PAM context, gated on `fprintd-list`. A face context must be added to a clone of `omarchy.lock`, started on wake events rather than re-armed every 250 ms like fingerprint, so the camera and illuminator do not stream for the whole lock.
+- The relay device is readable by the active seat user through the default `uaccess` tag, like any camera. Frames cannot be injected because the relay holds the producer side, but reading it is a privacy question (a dedicated group would close it).
+- The lock-screen face context has not run on the hardware yet; the first trial decides whether Quickshell's in-process PAM, pam_exec and the sudo hop fit inside Howdy's timeout.
 - Upstream's `omarchy-remove-security-fingerprint` deletes every `omarchy-hw-laptop-closed` line, including the face gate. Its sed should delete only the gate directly above `pam_fprintd.so`, the way the face removal does.
-- The lock-screen PAM conversation runs as the session user. Howdy's stable release keeps its tree root-only, so the lock plugin will need a privileged helper or the beta layout.
 - `pamtester` and `howdy` are AUR packages; `python-dlib` builds for a while. Howdy has not tagged a release since 2.6.1 (2020) although its beta with a native PAM module merged into master in 2025; `howdy-git` and the C++ `howdy-next` on the AUR are the candidates if the stable package falls behind.
 - Howdy opens the relay device through OpenCV, which reaches it via FFmpeg's video4linux input. FFmpeg prints `ioctl(VIDIOC_QBUF): Bad file descriptor` when Howdy releases the capture, because it returns the last frame buffer after closing the device. Harmless; the frames were already read.
 

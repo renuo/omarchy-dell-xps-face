@@ -5,6 +5,7 @@ Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with 
 - `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, plus `--driver` and `--device` for the layers a face setup needs.
 - `omarchy setup security face` and `omarchy remove security face` wire Howdy into sudo, polkit and the lock-screen PAM service, mirroring the fingerprint wizard.
 - `packaging/hm1092-ir-camera` is the driver package the wizard needs: the sensor module and bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
+- `omarchy-face-match` is the hidden `pam_exec` helper behind the face PAM lines, with `etc/sudoers.d/omarchy-face-match` for the lock screen, whose `shell/plugins/lock` gains a face context that tries once per wake.
 
 `docs/face-authentication.md` has the layers, contracts and known gaps.
 
@@ -13,9 +14,11 @@ Face authentication for [Omarchy](https://omarchy.org) on Dell XPS laptops with 
 ```
 bin/omarchy-*                      the commands, as they land in upstream bin/
 default/omarchy/omarchy-menu.jsonc the two menu rows (also usable as a user menu extension)
+etc/sudoers.d/                     the grant the lock screen's face helper runs through
 install/hardware/intel/            the hardware leaf that installs the driver package
 install/user/first-run/            the first-run invitation hook
 packaging/hm1092-ir-camera/        PKGBUILD, DKMS sources, relay, units, udev and WirePlumber rules
+shell/plugins/lock/                upstream's lock plugin with the face context added
 test/shell, test/shell.d/          upstream's runner and assertion protocol, with this overlay's suites
 docs/                              design notes
 bin/check, bin/setup, bin/run      lint and test, install dev deps, probe this machine
@@ -41,6 +44,18 @@ bin/run                                          # prints the relay device when 
 sudo /usr/lib/hm1092-ir-camera/hm1092-relay --probe   # otherwise: what resolved and what did not
 systemctl status hm1092-camera-init hm1092-relay
 ```
+
+## Try the lock screen
+
+```
+sudo install -m 440 -o root -g root etc/sudoers.d/omarchy-face-match /etc/sudoers.d/
+omarchy plugin clone omarchy.lock          # ~/.config/omarchy/plugins/<you>.lock/
+cp shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
+omarchy restart shell
+omarchy shell lock status                  # reports face: true once enrolled
+```
+
+On an installed 4.0.4 the clone needs the files generated against that version of the plugin (see `docs/face-authentication.md`).
 
 ## Upstream
 
