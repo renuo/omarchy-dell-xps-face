@@ -18,9 +18,11 @@ mkdir -p "$stub_bin" "$seclib/howdy"
 # The helper names Howdy's root-only tree and the system interpreter; retarget
 # both in a scratch copy so a stub stands in for compare.py.
 (( $(grep -Fxc 'security_lib=/usr/lib/security' "$helper") == 1 )) || fail "the helper names Howdy's tree once"
+(( $(grep -Fxc 'lock_pam=/etc/pam.d/omarchy-lock-face' "$helper") == 1 )) || fail "the helper names the lock's PAM service once"
 # shellcheck disable=SC2016 # the literal is what the helper's source says
 (( $(grep -Fc '/usr/bin/python3 "$compare"' "$helper") == 1 )) || fail "the helper runs compare.py with the system interpreter once"
-sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" -e "s|/usr/bin/python3|$stub_bin/python3|" "$helper" >"$copy"
+sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" -e "s|/usr/bin/python3|$stub_bin/python3|" \
+  -e "s|^lock_pam=/etc/pam.d/omarchy-lock-face$|lock_pam=$test_tmp/omarchy-lock-face|" "$helper" >"$copy"
 pass "the helper names its fixed paths, and the test drives a retargeted copy"
 
 cat >"$stub_bin/python3" <<'SH'
@@ -78,6 +80,27 @@ for user in "" "." ".." "../root" "alice bob" "a/b"; do
   ! grep -q '^python3' "$log" || fail "unsafe PAM_USER never reaches compare.py: '$user'" "$(cat "$log")"
 done
 pass "a missing or unsafe PAM_USER fails before Howdy runs"
+
+# The privileged half reached through the sudoers grant: sudo's env_reset
+# leaves SUDO_USER and no PAM_USER. The grant serves the lock screen alone.
+invoke_elevated() {
+  local status=0
+
+  : >"$log"
+  TEST_LOG="$log" TEST_STATUS=0 SUDO_USER=alice PATH="$stub_bin:/usr/bin:/bin" \
+    env -u PAM_USER bash "$copy" </dev/null >"$output" 2>&1 || status=$?
+  return "$status"
+}
+
+: >"$test_tmp/omarchy-lock-face"
+invoke_elevated || fail "the grant scans while the lock screen uses the face" "$(cat "$output")"
+grep -qxF "python3 $seclib/howdy/compare.py alice" "$log" || fail "the grant matches SUDO_USER's face" "$(cat "$log")"
+rm "$test_tmp/omarchy-lock-face"
+invoke_elevated && fail "the grant refuses while the lock screen does not use the face"
+! grep -q '^python3' "$log" || fail "a refused grant never reaches compare.py" "$(cat "$log")"
+grep -q 'lock screen' "$output" || fail "the refusal is explained" "$(cat "$output")"
+invoke 0 alice || fail "sudo and polkit, which run the helper through pam_exec, scan without the lock service"
+pass "the sudoers grant scans only while the lock screen uses the face"
 
 # Without a readable compare.py the helper elevates instead; that phase has its
 # own suite (face-match-sudoers-test.sh). A stub sudo keeps it out of here.

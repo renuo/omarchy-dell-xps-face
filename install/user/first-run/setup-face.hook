@@ -3,11 +3,11 @@
 set -e
 
 # Only invite when the IR camera has a working driver and face auth isn't set
-# up yet (the lock PAM file is the first thing the setup writes after a
-# verified enrollment).
-if omarchy-hw-dell-xps-ir-camera --driver && [[ ! -f /etc/pam.d/omarchy-lock-face ]] &&
+# up yet (the face limits are the last thing the setup writes on success,
+# whichever of sudo, polkit and the lock screen it was asked for).
+if omarchy-hw-dell-xps-ir-camera --driver && [[ ! -f /etc/omarchy/face.conf ]] &&
   omarchy-done ensure face-setup-invitation; then
   omarchy-notification-send -u critical -g $'' "Setup Face Recognition" \
-    "Enable sudo and polkit with your face through the IR camera." \
+    "Enable sudo, polkit and unlocking with your face." \
     --exec omarchy-launch-floating-terminal-with-presentation omarchy-setup-security-face
 fi

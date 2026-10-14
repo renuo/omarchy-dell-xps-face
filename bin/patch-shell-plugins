@@ -34,9 +34,58 @@ FACE_MODEL = '''// The face scans only when the user presses Enter in the empty 
 // attempt whose PAM conversation never completes.
 var ATTEMPT_TIMEOUT_MS = 15000
 
+// A lock offers the face for a few scans and for a while after it was taken;
+// past either, only the password opens it. /etc/omarchy/face.conf sets both,
+// and anything missing or malformed there falls back to these.
+var DEFAULT_ATTEMPTS = 1
+var DEFAULT_WINDOW_MINUTES = 60
+
+function positiveInteger(value, fallback) {
+  return /^[1-9][0-9]{0,5}$/.test(value) ? parseInt(value, 10) : fallback
+}
+
+function parsePolicy(text) {
+  var policy = { attempts: DEFAULT_ATTEMPTS, windowMs: DEFAULT_WINDOW_MINUTES * 60000 }
+  var lines = String(text || "").split("\\n")
+  for (var i = 0; i < lines.length; i++) {
+    var match = lines[i].match(/^\\s*([A-Z_]+)=("?)([^"]*)\\2\\s*$/)
+    if (!match) continue
+    if (match[1] === "LOCK_ATTEMPTS") policy.attempts = positiveInteger(match[3], DEFAULT_ATTEMPTS)
+    else if (match[1] === "LOCK_WINDOW_MINUTES") policy.windowMs = positiveInteger(match[3], DEFAULT_WINDOW_MINUTES) * 60000
+  }
+  return policy
+}
+
+// A lock of unknown age, or a clock that went backwards, has no window left.
+function windowExpired(lockedAtMs, nowMs, policy) {
+  if (!(lockedAtMs > 0) || nowMs < lockedAtMs) return true
+  return nowMs - lockedAtMs >= policy.windowMs
+}
+
+// "" without an enrolled face; otherwise "offered", or why it no longer is.
+function faceState(configured, attemptsUsed, expired, policy) {
+  if (!configured) return ""
+  if (attemptsUsed >= policy.attempts) return "exhausted"
+  if (expired) return "expired"
+  return "offered"
+}
+
+function placeholderText(state, fallback) {
+  if (state === "offered") return "Face or Password"
+  if (state === "exhausted") return "Password (face failed)"
+  if (state === "expired") return "Password (face expired)"
+  return fallback
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
-    ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS
+    ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
+    DEFAULT_ATTEMPTS: DEFAULT_ATTEMPTS,
+    DEFAULT_WINDOW_MINUTES: DEFAULT_WINDOW_MINUTES,
+    parsePolicy: parsePolicy,
+    windowExpired: windowExpired,
+    faceState: faceState,
+    placeholderText: placeholderText
   }
 }
 '''
@@ -45,10 +94,14 @@ FACE_FUNCS = '''  // The face scans only on an explicit Enter in the empty passw
   // same consent as the empty answer sudo and polkit take. Nothing scans on
   // lock, wake or a timer, so the camera and its invisible flood LED stay off
   // until asked. Howdy's own timeout ends an attempt; faceAbortTimer bounds a
-  // conversation that never completes.
+  // conversation that never completes. Every started scan spends one of the
+  // lock's attempts, and the window since locking is read afresh, since the
+  // display may have been dark when it closed.
   function startFace() {
-    if (!lockRequested || !sessionLock.secure || !faceConfigured) return
+    if (!lockRequested || !sessionLock.secure) return
     if (facePam.active || faceAuthenticating || authenticatingPassword) return
+    refreshFaceWindow()
+    if (currentFaceState() !== "offered") return
 
     failureMessage = ""
     faceAuthenticating = true
@@ -58,8 +111,22 @@ FACE_FUNCS = '''  // The face scans only on an explicit Enter in the empty passw
       logEvent("face-start-failed")
       return
     }
+    faceAttempts += 1
     faceAbortTimer.restart()
-    logEvent("face-attempt")
+    logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
+  }
+
+  function currentFaceState() {
+    return FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)
+  }
+
+  function refreshFaceWindow() {
+    faceWindowExpired = FaceModel.windowExpired(faceLockedAtMs, Date.now(), facePolicy)
+  }
+
+  function applyFacePolicy(text) {
+    facePolicy = FaceModel.parsePolicy(text)
+    refreshFaceWindow()
   }
 
   // abort() gives no completion signal; settle the attempt here.
@@ -117,8 +184,9 @@ FACE_TIMER = '''  Timer {
 
 '''
 
-FACE_FILEVIEW = '''  // The face setup writes this file only after a verified enrollment and the
-  // removal deletes it, so its presence is the enrollment signal.
+FACE_FILEVIEW = '''  // The face setup writes this file only after a verified enrollment, and only
+  // when the face is wanted on the lock screen; the removal deletes it, so its
+  // presence is the signal.
   FileView {
     path: "/etc/pam.d/omarchy-lock-face"
     watchChanges: true
@@ -128,11 +196,23 @@ FACE_FILEVIEW = '''  // The face setup writes this file only after a verified en
     onFileChanged: reload()
   }
 
+  // Root's policy for the offer; without the file the strict defaults hold.
+  FileView {
+    path: "/etc/omarchy/face.conf"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.applyFacePolicy(text())
+    onLoadFailed: root.applyFacePolicy("")
+    onFileChanged: reload()
+  }
+
 '''
 
-FACE_ICON = '''      // Face hint pinned inside the field's left edge when the IR camera is
-      // enrolled; it brightens while a scan runs. Enter on the empty field
-      // starts one, so the placeholder says "Face or Password".
+FACE_ICON = '''      // Face hint pinned inside the field's left edge while the lock offers
+      // the face; it brightens while a scan runs. Enter on the empty field
+      // starts one, so the placeholder says "Face or Password". Once the lock's
+      // scans are spent or its window has closed, the hint goes and the
+      // placeholder says why only the password is left.
       Text {
         id: faceIcon
         objectName: "faceIndicator"
@@ -140,7 +220,7 @@ FACE_ICON = '''      // Face hint pinned inside the field's left edge when the I
         anchors.left: parent.left
         anchors.leftMargin: inputField.borderLeft + 18
         anchors.verticalCenter: parent.verticalCenter
-        visible: root.faceConfigured
+        visible: root.faceIconShown
         text: "\uf030"
         color: root.faceAuthenticating ? %(active)s : %(placeholder)s
 %(font_lines)s
@@ -177,20 +257,33 @@ def patch_lock(src, dst):
     lines.insert(last_import + 1, 'import "FaceModel.js" as FaceModel')
     service = "\n".join(lines)
     service = once(service, "  property bool fingerprintConfigured: false\n",
-        "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n")
+        "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n"
+        "  property int faceAttempts: 0\n  property double faceLockedAtMs: 0\n  property bool faceWindowExpired: true\n"
+        "  property var facePolicy: FaceModel.parsePolicy(\"\")\n"
+        "  readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)\n")
     service = once(service, "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating\n",
         "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating || faceAuthenticating\n")
     service = once(service, "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n",
-        "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n    settleFaceAttempt()\n")
+        "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n    settleFaceAttempt()\n    faceAttempts = 0\n")
+    service = once(service, "    resetAuthenticationState()\n    lockRequested = true\n",
+        "    resetAuthenticationState()\n    lockRequested = true\n    faceLockedAtMs = Date.now()\n    refreshFaceWindow()\n")
+    service = once(service, "    logEvent(\"lock-stranded: recovering\")\n    beginLock()\n",
+        "    logEvent(\"lock-stranded: recovering\")\n    beginLock()\n"
+        "    // The old shell took this lock's age and spent scans with it.\n"
+        "    faceLockedAtMs = 0\n    refreshFaceWindow()\n")
+    m = re.search(r"\n  function runWake\(\) \{\n", service)
+    assert m
+    end = service.index("\n  }\n", m.end())
+    service = service[:end] + "\n    refreshFaceWindow()" + service[end:]
     m = re.search(r"\n  function runBlank\(\) \{\n", service)
     assert m
     end = service.index("\n  }\n", m.end())
     service = service[:end] + "\n    settleFaceAttempt(\"face-aborted: blank\")" + service[end:]
     service = once(service, "  function handleFingerprintFinished(result) {\n", FACE_FUNCS + "  function handleFingerprintFinished(result) {\n")
     service = sub_once(service, r"^(        )fingerprintConfigured: root\.fingerprintConfigured.*\n",
-        lambda m: m.group(0) + m.group(1) + "faceConfigured: root.faceConfigured\n" + m.group(1) + "faceAuthenticating: root.faceAuthenticating\n")
+        lambda m: m.group(0) + m.group(1) + "faceState: root.faceState\n" + m.group(1) + "faceAuthenticating: root.faceAuthenticating\n")
     service = sub_once(service, r"^(      )fingerprintConfigured: root\.fingerprintConfigured.*\n",
-        lambda m: m.group(0) + m.group(1) + "faceConfigured: root.faceConfigured\n" + m.group(1) + "faceAuthenticating: false\n")
+        lambda m: m.group(0) + m.group(1) + "faceState: root.faceConfigured ? \"offered\" : \"\"\n" + m.group(1) + "faceAuthenticating: false\n")
     service = once(service, "        onSubmitPassword: function(password) { root.submitPassword(password) }\n",
         "        onSubmitPassword: function(password) { root.submitPassword(password) }\n        onFaceScanRequested: root.startFace()\n")
     i = service.index("    id: fingerprintPam\n")
@@ -199,12 +292,32 @@ def patch_lock(src, dst):
     service = once(service, "  Timer {\n    id: fingerprintRetryTimer\n", FACE_TIMER + "  Timer {\n    id: fingerprintRetryTimer\n")
     service = once(service, '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n', FACE_FILEVIEW + '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n')
     service = once(service, "        fingerprint: root.fingerprintConfigured,\n",
-        "        fingerprint: root.fingerprintConfigured,\n        face: root.faceConfigured,\n        faceAuthenticating: root.faceAuthenticating,\n")
+        "        fingerprint: root.fingerprintConfigured,\n        face: root.faceConfigured,\n        faceState: root.faceState,\n"
+        "        faceAttempts: root.faceAttempts,\n        faceAuthenticating: root.faceAuthenticating,\n")
+    service = once(service, "  function armBlankTimer() {\n",
+        "  function armBlankTimer() {\n"
+        "    // A face scan holds the display up, since blanking would cut it short\n"
+        "    // and spend one of the lock's attempts; its end re-arms the timer.\n"
+        "    if (faceAuthenticating) return\n")
+    service = once(service,
+        "  onAuthenticatingPasswordChanged: {\n    if (!lockRequested) return\n"
+        "    if (authenticatingPassword) idleBlankTimer.stop()\n    else armBlankTimer()\n  }\n",
+        "  onAuthenticatingPasswordChanged: {\n    if (!lockRequested) return\n"
+        "    if (authenticatingPassword) idleBlankTimer.stop()\n    else armBlankTimer()\n  }\n\n"
+        "  onFaceAuthenticatingChanged: {\n    if (!lockRequested) return\n"
+        "    if (faceAuthenticating) idleBlankTimer.stop()\n    else armBlankTimer()\n  }\n")
 
+    lines = view.split("\n")
+    last_import = max(i for i, l in enumerate(lines) if l.startswith("import "))
+    lines.insert(last_import + 1, 'import "FaceModel.js" as FaceModel')
+    view = "\n".join(lines)
     view = once(view, "  property bool fingerprintConfigured: false\n",
-        "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n")
+        "  property bool fingerprintConfigured: false\n"
+        "  // What the lock offers: \"\" without a face, \"offered\", \"exhausted\" or \"expired\".\n"
+        "  property string faceState: \"\"\n  property bool faceAuthenticating: false\n")
     view = once(view, '  readonly property string placeholderText: "Enter Password"\n',
-        '  readonly property string placeholderText: faceConfigured ? "Face or Password" : "Enter Password"\n')
+        '  readonly property string placeholderText: FaceModel.placeholderText(faceState, "Enter Password")\n'
+        '  readonly property bool faceIconShown: faceState === "offered" || faceAuthenticating\n')
     view = once(view, "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && failureMessage.length === 0\n",
         "  readonly property bool showPasswordCursor: inputEnabled && !authenticatingPassword && !faceAuthenticating && failureMessage.length === 0\n")
     view = once(view, "  signal submitPassword(string password)\n",
@@ -217,7 +330,7 @@ def patch_lock(src, dst):
     view = once(view, "        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0\n",
         "        font.italic: !root.authenticatingPassword && !root.faceAuthenticating && root.failureMessage.length > 0\n")
     view = sub_once(view, r"^(  readonly property real fingerprintReserve: .*\n)",
-        lambda m: m.group(1) + "  readonly property real faceReserve: faceConfigured ? Math.round(faceIcon.implicitWidth + 12) : 0\n")
+        lambda m: m.group(1) + "  readonly property real faceReserve: faceIconShown ? Math.round(faceIcon.implicitWidth + 12) : 0\n")
     assert view.count("+ root.fingerprintReserve") == 2
     view = view.replace("+ root.fingerprintReserve", "+ Math.max(root.fingerprintReserve, root.faceReserve)")
     m = re.search(r"      Text \{\n        id: fingerprintIcon\n.*?\n      \}\n", view, re.S)

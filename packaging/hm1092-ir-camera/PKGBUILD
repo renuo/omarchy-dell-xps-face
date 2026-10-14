@@ -11,7 +11,7 @@
 
 pkgname=hm1092-ir-camera
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Himax HM1092 Windows Hello IR camera behind Intel IPU7: sensor driver, ipu-bridge entry and grayscale relay for face authentication"
 arch=('any')
 url="https://github.com/renuo/omarchy-dell-xps-face"
@@ -56,7 +56,7 @@ sha256sums=('d6cd5347b5a1b8a0f4ecf20445521a58b8b974e83cbfe83c611f593cc2322741'
             'e2747076a8882dcdea9c8595913dd92b536497d90c27612baf2f733ec036d002'
             'e30cf9fc73ea7ea2c7d29fc03c6c19880b4bd15d9c3bd3425dac1beca7f94686'
             '017d25743766611f6600984dcb6c5b18384fa00980e817d09761a261d511422f'
-            'cf04c50c2d7dbacb3374274b4350c41bf2d45f5a3fe4be1ae784a7fe5edddaaa'
+            'd7dbf55a046cc1abade4b127214637607b7867388b535450074fa3d3c5f9c1b0'
             'a1fc4f585d34708f150faa9407559b8433dbb17bbd6462f9c9678a49b8780b69')
 
 prepare() {

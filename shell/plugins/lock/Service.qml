@@ -27,6 +27,11 @@ Item {
   property bool fingerprintConfigured: false
   property bool faceConfigured: false
   property bool faceAuthenticating: false
+  property int faceAttempts: 0
+  property double faceLockedAtMs: 0
+  property bool faceWindowExpired: true
+  property var facePolicy: FaceModel.parsePolicy("")
+  readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)
   property int fingerprintUnreachedStreak: 0
   property bool fingerprintAttemptReachedDevice: false
   property bool fingerprintAttemptFastError: false
@@ -136,6 +141,9 @@ Item {
     strandedLock = false
     logEvent("lock-stranded: recovering")
     beginLock()
+    // The old shell took this lock's age and spent scans with it.
+    faceLockedAtMs = 0
+    refreshFaceWindow()
   }
 
   function refreshBackground() {
@@ -209,6 +217,7 @@ Item {
     if (passwordPam.active) passwordPam.abort()
     if (fingerprintPam.active) fingerprintPam.abort()
     settleFaceAttempt()
+    faceAttempts = 0
   }
 
   function beginLock() {
@@ -219,6 +228,8 @@ Item {
 
     resetAuthenticationState()
     lockRequested = true
+    faceLockedAtMs = Date.now()
+    refreshFaceWindow()
     armBlankTimer()
     logEvent("lock-requested")
     queueSessionLock()
@@ -246,6 +257,9 @@ Item {
   }
 
   function armBlankTimer() {
+    // A face scan holds the display up, since blanking would cut it short
+    // and spend one of the lock's attempts; its end re-arms the timer.
+    if (faceAuthenticating) return
     idleBlankTimer.armedAt = Date.now()
     idleBlankTimer.restart()
   }
@@ -256,6 +270,7 @@ Item {
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
     nudgeFingerprint()
+    refreshFaceWindow()
   }
 
   // User activity advances retries without recreating a busy retry loop.
@@ -440,10 +455,14 @@ Item {
   // same consent as the empty answer sudo and polkit take. Nothing scans on
   // lock, wake or a timer, so the camera and its invisible flood LED stay off
   // until asked. Howdy's own timeout ends an attempt; faceAbortTimer bounds a
-  // conversation that never completes.
+  // conversation that never completes. Every started scan spends one of the
+  // lock's attempts, and the window since locking is read afresh, since the
+  // display may have been dark when it closed.
   function startFace() {
-    if (!lockRequested || !sessionLock.secure || !faceConfigured) return
+    if (!lockRequested || !sessionLock.secure) return
     if (facePam.active || faceAuthenticating || authenticatingPassword) return
+    refreshFaceWindow()
+    if (currentFaceState() !== "offered") return
 
     failureMessage = ""
     faceAuthenticating = true
@@ -453,8 +472,22 @@ Item {
       logEvent("face-start-failed")
       return
     }
+    faceAttempts += 1
     faceAbortTimer.restart()
-    logEvent("face-attempt")
+    logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
+  }
+
+  function currentFaceState() {
+    return FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)
+  }
+
+  function refreshFaceWindow() {
+    faceWindowExpired = FaceModel.windowExpired(faceLockedAtMs, Date.now(), facePolicy)
+  }
+
+  function applyFacePolicy(text) {
+    facePolicy = FaceModel.parsePolicy(text)
+    refreshFaceWindow()
   }
 
   // abort() gives no completion signal; settle the attempt here.
@@ -540,7 +573,7 @@ Item {
         videoPosterPath: root.videoPosterPath
         backgroundVersion: root.backgroundVersion
         fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
-        faceConfigured: root.faceConfigured
+        faceState: root.faceState
         faceAuthenticating: root.faceAuthenticating
         fingerprintUnavailable: root.fingerprintUnavailable
         authenticatingPassword: root.authenticatingPassword
@@ -577,7 +610,7 @@ Item {
       videoPosterPath: root.videoPosterPath
       backgroundVersion: root.backgroundVersion
       fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
-      faceConfigured: root.faceConfigured
+      faceState: root.faceConfigured ? "offered" : ""
       faceAuthenticating: false
       fingerprintUnavailable: root.fingerprintUnavailable
       authenticatingPassword: false
@@ -893,14 +926,31 @@ Item {
     else armBlankTimer()
   }
 
-  // The face setup writes this file only after a verified enrollment and the
-  // removal deletes it, so its presence is the enrollment signal.
+  onFaceAuthenticatingChanged: {
+    if (!lockRequested) return
+    if (faceAuthenticating) idleBlankTimer.stop()
+    else armBlankTimer()
+  }
+
+  // The face setup writes this file only after a verified enrollment, and only
+  // when the face is wanted on the lock screen; the removal deletes it, so its
+  // presence is the signal.
   FileView {
     path: "/etc/pam.d/omarchy-lock-face"
     watchChanges: true
     printErrors: false
     onLoaded: root.faceConfigured = true
     onLoadFailed: root.faceConfigured = false
+    onFileChanged: reload()
+  }
+
+  // Root's policy for the offer; without the file the strict defaults hold.
+  FileView {
+    path: "/etc/omarchy/face.conf"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.applyFacePolicy(text())
+    onLoadFailed: root.applyFacePolicy("")
     onFileChanged: reload()
   }
 
@@ -954,6 +1004,8 @@ Item {
         passwordPam: root.passwordPamConfigured,
         fingerprint: root.fingerprintConfigured,
         face: root.faceConfigured,
+        faceState: root.faceState,
+        faceAttempts: root.faceAttempts,
         faceAuthenticating: root.faceAuthenticating,
         fingerprintUnavailable: root.fingerprintUnavailable,
         authenticating: root.authenticating,

@@ -14,6 +14,7 @@ stub_bin="$test_tmp/bin"
 pamd="$test_tmp/pamd"
 seclib="$test_tmp/security"
 etc_howdy="$test_tmp/howdy-etc"
+omarchy_etc="$test_tmp/omarchy-etc"
 log="$test_tmp/calls.log"
 output="$test_tmp/output"
 copy="$test_tmp/setup.sh"
@@ -32,13 +33,15 @@ beta_module="pam_howdy.so"
 # The setup writes fixed root-owned paths. Retarget a scratch copy, and fail if
 # a path is not named exactly as expected, so the seam keeps standing for the
 # shipped command.
-for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face'; do
+for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face' \
+  'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf'; do
   (( $(grep -Fxc "$literal" "$setup") == 1 )) || fail "setup names $literal exactly once"
 done
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
   -e "s|/etc/pam.d/|$pamd/|g" \
-  -e "s|/etc/howdy/|$etc_howdy/|g" "$setup" >"$copy"
-! grep -q '/etc/pam.d/\|/etc/howdy/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
+  -e "s|/etc/howdy/|$etc_howdy/|g" \
+  -e "s|/etc/omarchy/|$omarchy_etc/|g" "$setup" >"$copy"
+! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
 pass "setup names its fixed paths once each, and the test drives a retargeted copy"
 
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
@@ -59,6 +62,22 @@ cat >"$stub_bin/omarchy-pkg-aur-add" <<'SH'
 #!/bin/bash
 printf 'aur %s\n' "$*" >>"$TEST_LOG"
 [[ ${TEST_PKG_FAIL:-0} == 0 ]]
+SH
+
+# The scope question: answer with the TEST_CHOICE-th option, or cancel at 0
+# the way gum does on Escape, with no output.
+cat >"$stub_bin/gum" <<'SH'
+#!/bin/bash
+printf 'gum %s\n' "$*" >>"$TEST_LOG"
+[[ ${1:-} == choose ]] || exit 1
+shift
+options=()
+while (( $# > 0 )) && [[ $1 != --* ]]; do
+  options+=("$1")
+  shift
+done
+(( TEST_CHOICE > 0 && TEST_CHOICE <= ${#options[@]} )) || exit 130
+printf '%s\n' "${options[TEST_CHOICE - 1]}"
 SH
 
 # Howdy's layout is read from the package database, so the stub answers the
@@ -109,6 +128,10 @@ case "${1:-}" in
     (( $# == 2 )) && in_scratch "$2" || reject "$@"
     exec /usr/bin/tee "$2"
     ;;
+  mkdir)
+    (( $# == 3 )) && [[ $2 == "-p" ]] && in_scratch "$3" || reject "$@"
+    exec /usr/bin/mkdir -p "$3"
+    ;;
   rm)
     (( $# == 3 )) && [[ $2 == "-f" ]] && in_scratch "$3" || reject "$@"
     exec /usr/bin/rm -f "$3"
@@ -118,7 +141,7 @@ case "${1:-}" in
     [[ $TEST_ENROLL == "ok" ]]
     ;;
   pamtester)
-    [[ $* == "pamtester omarchy-lock-face alice authenticate" ]] || reject "$@"
+    [[ $* == "pamtester omarchy-face-verify alice authenticate" ]] || reject "$@"
     [[ $TEST_VERIFY == "ok" ]]
     ;;
   *)
@@ -131,18 +154,19 @@ chmod +x "$stub_bin"/*
 
 reset_fixture() {
   : >"$log"
-  rm -rf "$pamd" "$seclib" "$etc_howdy"
+  rm -rf "$pamd" "$seclib" "$etc_howdy" "$omarchy_etc"
   mkdir -p "$pamd" "$seclib/howdy" "$etc_howdy"
   printf '#%%PAM-1.0\nauth\t\tinclude\t\tsystem-auth\naccount\t\tinclude\t\tsystem-auth\nsession\t\tinclude\t\tsystem-auth\n' >"$pamd/sudo"
   printf '[video]\ndevice_path = none\n' >"$seclib/howdy/config.ini"
   printf '[video]\ndevice_path = none\n' >"$etc_howdy/config.ini"
 }
 
-# invoke_setup <hw> <layout> [enroll] [verify] [pkg-fail] [device]
+# [TEST_CHOICE=<n>] invoke_setup <hw> <layout> [enroll] [verify] [pkg-fail] [device]
+# TEST_CHOICE picks the scope: 1 everything, 2 sudo and polkit, 3 the lock screen.
 invoke_setup() {
   local status=0
 
-  TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" \
+  TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
     TEST_PKG_FAIL="${5:-0}" TEST_DEVICE="${6:-/dev/video51}" USER=alice \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
@@ -157,7 +181,12 @@ assert_no_mutation() {
   local description="$1"
 
   ! grep -q '^sudo' "$log" || fail "$description" "$(cat "$log")"
-  [[ ! -e $pamd/omarchy-lock-face && ! -e $pamd/polkit-1 ]] || fail "$description left PAM files behind"
+  [[ ! -e $pamd/omarchy-lock-face && ! -e $pamd/omarchy-face-verify && ! -e $pamd/polkit-1 ]] || fail "$description left PAM files behind"
+  [[ ! -e $omarchy_etc/face.conf ]] || fail "$description left the face policy behind"
+}
+
+expected_block() {
+  printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module"
 }
 
 reset_fixture
@@ -188,6 +217,12 @@ assert_no_mutation "a malformed device path configures nothing"
 pass "setup rejects a device path that is not a /dev/video node"
 
 reset_fixture
+TEST_CHOICE=0 invoke_setup ready stable && fail "setup stops when the scope question is cancelled"
+assert_no_mutation "a cancelled scope question configures nothing"
+! grep -q '^aur' "$log" || fail "a cancelled scope question installs nothing" "$(cat "$log")"
+pass "setup asks where the face should work before installing anything, and a cancel stops it"
+
+reset_fixture
 invoke_setup ready stable ok ok 1 && fail "setup fails when the packages do not install"
 assert_no_mutation "a failed package install configures nothing"
 pass "setup stops when Howdy cannot be installed"
@@ -214,10 +249,12 @@ pass "a failed enrollment stops before any PAM stack is touched"
 reset_fixture
 invoke_setup ready stable ok fail && fail "setup fails when verification fails"
 grep -q 'Verification failed' "$output" || fail "a failed verification is reported" "$(cat "$output")"
-[[ ! -e $pamd/omarchy-lock-face ]] || fail "a failed verification removes the lock PAM file"
+[[ ! -e $pamd/omarchy-face-verify ]] || fail "a failed verification removes its PAM service"
+[[ ! -e $pamd/omarchy-lock-face ]] || fail "a failed verification writes no lock PAM file"
 [[ ! -e $pamd/polkit-1 ]] || fail "a failed verification creates no polkit stack"
-! grep -Eq 'howdy' "$pamd/sudo" || fail "a failed verification leaves sudo alone" "$(cat "$pamd/sudo")"
-pass "a failed verification removes the lock PAM file and leaves sudo and polkit alone"
+! grep -q 'omarchy-face-match' "$pamd/sudo" || fail "a failed verification leaves sudo alone" "$(cat "$pamd/sudo")"
+[[ ! -e $omarchy_etc/face.conf ]] || fail "a failed verification writes no face policy"
+pass "a failed verification removes its PAM service and touches no stack"
 
 reset_fixture
 invoke_setup ready stable || fail "setup succeeds with a ready camera and a verified face" "$(cat "$output"; cat "$log")"
@@ -238,18 +275,50 @@ grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the IR device" "$(cat "$seclib/howdy/config.ini")"
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
 ! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
-(( $(log_line_of $'sudo\thowdy\tadd') < $(log_line_of $'sudo\ttee') )) || fail "enrollment precedes the lock PAM file" "$(cat "$log")"
-(( $(log_line_of $'sudo\ttee') < $(log_line_of $'sudo\tpamtester') )) || fail "the lock PAM file precedes verification" "$(cat "$log")"
-(( $(log_line_of $'sudo\tpamtester') < $(log_line_of $'sudo\tsed\t-i\t-e\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
+(( $(log_line_of 'gum choose') < $(log_line_of 'aur ') )) || fail "the scope is asked before the long AUR builds" "$(cat "$log")"
+verify_write=$(log_line_of $'sudo\ttee\t'"$pamd/omarchy-face-verify")
+verify_drop=$(log_line_of $'sudo\trm\t-f\t'"$pamd/omarchy-face-verify")
+(( $(log_line_of $'sudo\thowdy\tadd') < verify_write )) || fail "enrollment precedes the verification service" "$(cat "$log")"
+(( verify_write < $(log_line_of $'sudo\tpamtester') )) || fail "the verification service precedes verification" "$(cat "$log")"
+(( $(log_line_of $'sudo\tpamtester') < verify_drop )) || fail "the verification service goes once it has served" "$(cat "$log")"
+(( verify_drop < $(log_line_of $'sudo\tsed\t-i\t-e\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
+(( verify_drop < $(log_line_of $'sudo\ttee\t'"$pamd/omarchy-lock-face") )) || fail "verification precedes the lock service" "$(cat "$log")"
+[[ ! -e $pamd/omarchy-face-verify ]] || fail "no verification service is left behind"
+[[ $(grep -v -e '^#' -e '^$' "$omarchy_etc/face.conf") == $'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60' ]] ||
+  fail "the face policy allows one scan within an hour of locking" "$(cat "$omarchy_etc/face.conf")"
 grep -q 'Perfect! Face authentication is now configured' "$output" || fail "success is reported" "$(cat "$output")"
-pass "setup enrolls, verifies through PAM, then configures sudo, polkit and the lock service"
+pass "setup enrolls, verifies through PAM, then configures sudo, polkit, the lock service and its policy"
 
 before_sudo=$(<"$pamd/sudo")
 before_polkit=$(<"$pamd/polkit-1")
+printf 'LOCK_ATTEMPTS=3\nLOCK_WINDOW_MINUTES=10\n' >"$omarchy_etc/face.conf"
 invoke_setup ready stable || fail "setup succeeds a second time" "$(cat "$output")"
 [[ $(<"$pamd/sudo") == "$before_sudo" && $(<"$pamd/polkit-1") == "$before_polkit" ]] ||
   fail "a second run adds no duplicate lines" "$(cat "$pamd/sudo")"
-pass "setup is idempotent on an already configured stack"
+[[ $(<"$omarchy_etc/face.conf") == $'LOCK_ATTEMPTS=3\nLOCK_WINDOW_MINUTES=10' ]] ||
+  fail "a second run keeps an edited face policy" "$(cat "$omarchy_etc/face.conf")"
+pass "setup is idempotent on an already configured stack and keeps an edited policy"
+
+reset_fixture
+printf '#%%PAM-1.0\nauth required %s\n' "$lock_module" >"$pamd/omarchy-lock-face"
+TEST_CHOICE=2 invoke_setup ready stable || fail "setup succeeds for sudo and polkit only" "$(cat "$output"; cat "$log")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(expected_block)" ]] || fail "sudo gets the asking block" "$(cat "$pamd/sudo")"
+[[ $(sed -n 1,3p "$pamd/polkit-1") == "$(expected_block)" ]] || fail "polkit gets the asking block" "$(cat "$pamd/polkit-1")"
+[[ ! -e $pamd/omarchy-lock-face ]] || fail "the lock service of an earlier run goes"
+[[ -f $omarchy_etc/face.conf ]] || fail "the face policy marks the setup done"
+pass "sudo and polkit only: both stacks ask for the face and the lock screen keeps the password"
+
+reset_fixture
+cp "$pamd/sudo" "$test_tmp/sudo-plain"
+printf '%s\n' "$(expected_block)" "$gate1" 'auth      sufficient pam_fprintd.so' "$(cat "$test_tmp/sudo-plain")" >"$pamd/sudo"
+TEST_CHOICE=3 invoke_setup ready stable || fail "setup succeeds for the lock screen only" "$(cat "$output"; cat "$log")"
+[[ $(<"$pamd/omarchy-lock-face") == "$(printf '%s\n' '#%PAM-1.0' "auth       required                    $lock_module" \
+  'account    include                     system-local-login')" ]] || fail "the lock service requires the face module" "$(cat "$pamd/omarchy-lock-face")"
+[[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate1" 'auth      sufficient pam_fprintd.so'; cat "$test_tmp/sudo-plain")" ]] ||
+  fail "sudo loses the face block of an earlier run and keeps fingerprint with its gate" "$(cat "$pamd/sudo")"
+[[ ! -e $pamd/polkit-1 ]] || fail "no polkit stack is created for the lock screen alone"
+[[ -f $omarchy_etc/face.conf ]] || fail "the lock screen gets its face policy"
+pass "the lock screen only: the lock service is written and sudo and polkit keep the password"
 
 reset_fixture
 printf '%s\n' "$gate1" 'auth      sufficient pam_fprintd.so' >"$test_tmp/fingerprint-top"

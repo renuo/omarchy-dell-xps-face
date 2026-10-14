@@ -9,9 +9,9 @@ git clone https://github.com/renuo/omarchy-dell-xps-face
 ## What it adds
 
 - `omarchy hw dell xps ir camera` detects the camera and its IR flood LED, with `--driver` and `--device` for the layers a face setup needs.
-- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo, polkit and the lock-screen PAM service, mirroring the fingerprint wizard. sudo and polkit ask first: Enter on the empty password prompt scans, a typed password skips the camera.
+- `omarchy setup security face` and `omarchy remove security face` enroll with [Howdy](https://github.com/boltgolt/howdy) and wire it into sudo and polkit, the lock screen, or both, whichever the setup is told, mirroring the fingerprint wizard. sudo and polkit ask first: Enter on the empty password prompt scans, a typed password skips the camera.
 - `omarchy-face-match`, the hidden `pam_exec` helper behind those PAM lines, with `etc/sudoers.d/omarchy-face-match` so the lock screen's user-level PAM can reach Howdy's root-only tree.
-- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", Enter scans, "Scanning face…" and "No match" report what happened.
+- `shell/plugins/lock` and `shell/plugins/polkit`: upstream's plugins with the face offer added. The field says "Face or Password", Enter scans, "Scanning face…" and "No match" report what happened. A lock offers the face for one scan within an hour of locking, both set in `/etc/omarchy/face.conf`; past either the camera hint goes and the field says "Password (face failed)" or "Password (face expired)".
 - `packaging/hm1092-ir-camera`: the driver package the wizard needs. The sensor module and the bridge entry as DKMS, and a relay that publishes the sensor as a grayscale V4L2 device while owning the flood LED. `install/hardware/intel/ipu7-ir-camera.sh` installs it on matching machines.
 
 `docs/face-authentication.md` has the layers, contracts, known gaps and the exit plan for when mainline Linux catches up.
@@ -76,7 +76,7 @@ omarchy plugin clone omarchy.polkit
 cp /tmp/face-shell/plugins/lock/{Service.qml,LockView.qml,FaceModel.js} ~/.config/omarchy/plugins/$USER.lock/
 cp /tmp/face-shell/plugins/polkit/{PolkitAgent.qml,PolkitModel.js} ~/.config/omarchy/plugins/$USER.polkit/
 omarchy restart shell
-omarchy shell lock status                  # reports face: true once enrolled
+omarchy shell lock status                  # face: true once enrolled, faceState: offered while locked
 ```
 
 ## Upstream

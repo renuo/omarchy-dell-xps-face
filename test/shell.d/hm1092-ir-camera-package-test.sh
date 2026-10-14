@@ -87,6 +87,23 @@ grep -qF "ATTR{name}==\"$label\"" "$pkg/72-hm1092-ir-camera.rules" || fail "the 
 grep -qi 'hm1092' <<<"$label" || fail "the device name contains hm1092, which omarchy-hw-dell-xps-ir-camera --device looks for"
 pass "the device name agrees across the conf, udev and WirePlumber"
 
+# Only root reads the relay device: Howdy always runs as root, and a session
+# process that could open it could watch the IR camera or, while the relay
+# restarts, take the producer side and feed it frames. 70-uaccess tags every
+# video4linux node for the seat user and 73-seat-late turns that tag into an
+# ACL, so the rule must sit between them.
+rule=$(grep -F "ATTR{name}==\"$label\"" "$pkg/72-hm1092-ir-camera.rules")
+for part in 'TAG-="uaccess"' 'TAG-="seat"' 'MODE="0600"' 'GROUP="root"' 'SYMLINK+="hm1092-ir"'; do
+  grep -qF "$part" <<<"$rule" || fail "the relay device rule carries $part" "$rule"
+done
+[[ $(grep -o '[0-9]*-hm1092-ir-camera.rules' "$pkg/PKGBUILD" | sort -u) =~ ^7[12]-hm1092-ir-camera.rules$ ]] ||
+  fail "the rule is installed between 70-uaccess and 73-seat-late" "$(grep -n 'rules' "$pkg/PKGBUILD")"
+for hook in post_install post_upgrade; do
+  sed -n "/^$hook() {/,/^}/p" "$pkg/hm1092-ir-camera.install" | grep -q "udevadm trigger --action=change --subsystem-match=video4linux --attr-match=name=\"$label\"" ||
+    fail "$hook applies the rule to a relay device that already exists"
+done
+pass "the relay device is root's alone, also right after an install or upgrade"
+
 # The units only reference files the package installs.
 while read -r exe; do
   [[ -f $pkg/${exe##*/} ]] || fail "unit references $exe, which the package does not ship"

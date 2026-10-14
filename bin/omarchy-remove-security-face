@@ -6,6 +6,8 @@
 set -e
 
 lock_pam=/etc/pam.d/omarchy-lock-face
+verify_pam=/etc/pam.d/omarchy-face-verify
+face_conf=/etc/omarchy/face.conf
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Resolve the invoking account before changing authentication or packages.
@@ -38,10 +40,14 @@ remove_face_lines() {
   fi
 }
 
-remove_lock_face_pam() {
-  if [[ -f $lock_pam ]]; then
-    echo "Removing lock screen face authentication..."
-    sudo rm -f "$lock_pam"
+# Whichever of sudo, polkit and the lock screen the setup was asked for, each
+# removal below is a no-op where nothing was configured.
+remove_file() {
+  local file=$1 label=$2
+
+  if [[ -f $file ]]; then
+    echo "Removing $label..."
+    sudo rm -f "$file"
   fi
 }
 
@@ -50,7 +56,9 @@ echo -e "\e[32mRemoving face authentication.\n\e[0m"
 
 remove_face_lines /etc/pam.d/sudo sudo
 remove_face_lines /etc/pam.d/polkit-1 polkit
-remove_lock_face_pam
+remove_file "$lock_pam" "lock screen face authentication"
+remove_file "$verify_pam" "the face verification service an interrupted setup left"
+remove_file "$face_conf" "the lock screen's face limits"
 
 # The face models are untracked package data, so clear them while Howdy's CLI
 # is still there to do it; a failure here must not leave them behind.

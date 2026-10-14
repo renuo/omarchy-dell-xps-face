@@ -3,6 +3,7 @@ import QtQuick.Effects
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "FaceModel.js" as FaceModel
 
 Item {
   id: root
@@ -11,7 +12,8 @@ Item {
   property string videoPosterPath: ""
   property int backgroundVersion: 0
   property bool fingerprintConfigured: false
-  property bool faceConfigured: false
+  // What the lock offers: "" without a face, "offered", "exhausted" or "expired".
+  property string faceState: ""
   property bool faceAuthenticating: false
   property bool fingerprintUnavailable: false
   property bool authenticatingPassword: false
@@ -27,7 +29,8 @@ Item {
   property string passwordText: ""
   property bool syncingPasswordText: false
 
-  readonly property string placeholderText: faceConfigured ? "Face or Password" : "Enter Password"
+  readonly property string placeholderText: FaceModel.placeholderText(faceState, "Enter Password")
+  readonly property bool faceIconShown: faceState === "offered" || faceAuthenticating
   readonly property int fieldWidth: 381
   readonly property int fieldHeight: 67
   readonly property int outlineThickness: 3
@@ -37,7 +40,7 @@ Item {
   // Space to keep clear on each side of the field for the fingerprint icon
   // (icon width plus a gap) so the centered dots never run under it.
   readonly property real fingerprintReserve: fingerprintConfigured ? Math.round(fingerprintIcon.implicitWidth + 12) : 0
-  readonly property real faceReserve: faceConfigured ? Math.round(faceIcon.implicitWidth + 12) : 0
+  readonly property real faceReserve: faceIconShown ? Math.round(faceIcon.implicitWidth + 12) : 0
   // Shrink the dots to fit once the password outgrows the field, so every
   // keystroke stays visible — otherwise long passwords clip with no feedback.
   readonly property real passwordDotScale: dotMetrics.advanceWidth > 0
@@ -245,9 +248,11 @@ Item {
       // Matches hyprlock, which draws its fingerprint icon in the same spot.
       // A reader the shell cannot reach crosses out rather than disappears, so
       // it stops inviting touches that can never unlock.
-      // Face hint pinned inside the field's left edge when the IR camera is
-      // enrolled; it brightens while a scan runs. Enter on the empty field
-      // starts one, so the placeholder says "Face or Password".
+      // Face hint pinned inside the field's left edge while the lock offers
+      // the face; it brightens while a scan runs. Enter on the empty field
+      // starts one, so the placeholder says "Face or Password". Once the lock's
+      // scans are spent or its window has closed, the hint goes and the
+      // placeholder says why only the password is left.
       Text {
         id: faceIcon
         objectName: "faceIndicator"
@@ -255,7 +260,7 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: inputField.borderLeft + 18
         anchors.verticalCenter: parent.verticalCenter
-        visible: root.faceConfigured
+        visible: root.faceIconShown
         text: ""
         color: root.faceAuthenticating ? Commons.Color.lock.text : Commons.Color.lock.placeholder
         font.family: Style.font.family

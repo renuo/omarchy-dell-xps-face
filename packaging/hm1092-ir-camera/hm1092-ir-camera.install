@@ -2,6 +2,7 @@ post_install() {
   systemctl daemon-reload
   systemctl enable hm1092-relay.service
   udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger --action=change --subsystem-match=video4linux --attr-match=name="HM1092 IR Camera" 2>/dev/null || true
   cat <<'MSG'
 
   hm1092-ir-camera: DKMS builds the hm1092 sensor module, and on kernels before
@@ -19,6 +20,7 @@ post_upgrade() {
   systemctl daemon-reload
   systemctl enable hm1092-relay.service
   udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger --action=change --subsystem-match=video4linux --attr-match=name="HM1092 IR Camera" 2>/dev/null || true
   echo "  hm1092-ir-camera: reboot to load the rebuilt modules."
 }
 

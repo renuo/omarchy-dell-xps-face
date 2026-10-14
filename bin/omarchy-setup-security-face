@@ -7,6 +7,8 @@ set -e
 
 security_lib=/usr/lib/security
 lock_pam=/etc/pam.d/omarchy-lock-face
+verify_pam=/etc/pam.d/omarchy-face-verify
+face_conf=/etc/omarchy/face.conf
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Presence is not consent: a camera sees a face whether or not its owner meant
@@ -31,7 +33,8 @@ face_gate_skipping() {
 # pam_python script, which needs Python 2, so pam_exec runs omarchy-face-match
 # around its compare.py instead (seteuid keeps root for sudo and polkit, stdout
 # feeds the prompt). This is the lock screen's line, which scans without
-# asking: the lock cannot answer a prompt, and a wake event is its consent.
+# asking: the lock cannot answer a prompt, so it takes the consent in its view,
+# Enter on the empty field.
 # The package's own file list answers this even though the stable install is
 # readable by root only.
 face_module_line() {
@@ -89,6 +92,14 @@ stack_has_block() {
     }' "$1"
 }
 
+# Face lines go together with only the gate directly above them, so a
+# fingerprint stack sharing the file keeps its own gate.
+strip_face_lines() {
+  sudo sed -i -E \
+    -e "\\%omarchy-hw-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
+    -e "\\%$face_marker%d" "$1"
+}
+
 configure_stack() {
   local file=$1 label=$2 line
   local inserts=()
@@ -98,11 +109,7 @@ configure_stack() {
   fi
   echo "Configuring $label for face authentication..."
   if grep -Eq -- "$face_marker" "$file"; then
-    # Earlier face lines go first, and only the gate directly above them, so a
-    # fingerprint stack sharing the file keeps its own gate.
-    sudo sed -i -E \
-      -e "\\%omarchy-hw-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
-      -e "\\%$face_marker%d" "$file"
+    strip_face_lines "$file"
   fi
   while IFS= read -r line; do
     inserts+=(-e "1i $line")
@@ -132,6 +139,21 @@ EOF
   fi
 }
 
+# A stack the user left out loses the face lines an earlier run put there.
+unconfigure_stack() {
+  local file=$1 label=$2
+
+  if [[ -f $file ]] && grep -Eq -- "$face_marker" "$file"; then
+    echo "Removing face authentication from $label..."
+    strip_face_lines "$file"
+  fi
+}
+
+remove_pam_config() {
+  unconfigure_stack /etc/pam.d/sudo sudo
+  unconfigure_stack /etc/pam.d/polkit-1 polkit
+}
+
 setup_lock_face_pam() {
   echo "Configuring lock screen for face authentication..."
   # omarchy:heredoc-expands paths=none -- $face_module is the PAM module line
@@ -140,6 +162,51 @@ setup_lock_face_pam() {
 #%PAM-1.0
 auth       required                    $face_module
 account    include                     system-local-login
+EOF
+}
+
+remove_lock_face_pam() {
+  if [[ -f $lock_pam ]]; then
+    echo "Removing lock screen face authentication..."
+    sudo rm -f "$lock_pam"
+  fi
+}
+
+# Verify through PAM before touching any stack, the way they will run it.
+# Enrollment only proves Howdy saw a face, not that the module can match it
+# from a PAM stack. The service lives for this check alone, so a lock screen
+# the user left out never offers the face, not even for a moment.
+verify_face() {
+  local status=0
+
+  # omarchy:heredoc-expands paths=none -- $face_module is the PAM module line
+  # taken from Howdy's package file list, never from the caller.
+  sudo tee "$verify_pam" >/dev/null <<EOF
+#%PAM-1.0
+auth       required                    $face_module
+EOF
+  sudo pamtester "${verify_pam##*/}" "$USER" authenticate || status=$?
+  sudo rm -f "$verify_pam"
+  return "$status"
+}
+
+# How many scans one lock allows and for how long after locking, read by the
+# lock screen. Written once, so a re-run keeps the user's edits.
+setup_face_conf() {
+  if [[ -f $face_conf ]]; then
+    return
+  fi
+  echo "Writing the lock screen's face limits to $face_conf..."
+  sudo mkdir -p "${face_conf%/*}"
+  sudo tee "$face_conf" >/dev/null <<'EOF'
+# Face authentication on the lock screen. Edit with sudo; the lock reads
+# changes right away. Past either limit only the password unlocks.
+
+# Face scans one lock allows.
+LOCK_ATTEMPTS=1
+
+# Minutes after locking during which the lock offers the face.
+LOCK_WINDOW_MINUTES=60
 EOF
 }
 
@@ -168,6 +235,17 @@ if [[ $face_device != /dev/video[0-9]* ]]; then
   echo -e "\e[31mUnexpected IR camera device: $face_device\e[0m"
   exit 1
 fi
+
+# Ask before the long AUR builds, so nothing waits on an answer afterwards.
+scope_all="sudo, polkit and lock screen"
+scope_auth="sudo and polkit only"
+scope_lock="Lock screen only"
+case $(gum choose "$scope_all" "$scope_auth" "$scope_lock" --header "Use your face for") in
+  "$scope_all") use_auth=1 use_lock=1 ;;
+  "$scope_auth") use_auth=1 use_lock=0 ;;
+  "$scope_lock") use_auth=0 use_lock=1 ;;
+  *) exit 1 ;;
+esac
 
 echo "Installing required packages..."
 echo "Howdy and its dependencies are built from the AUR, which can take a long time;"
@@ -202,19 +280,32 @@ fi
 
 echo -e "\e[32m\nFace model added successfully!\e[0m"
 
-# Verify through PAM before touching sudo and polkit, the way the lock screen
-# and sudo will use it. Enrollment only proves Howdy saw a face, not that the
-# module can match it from a PAM stack.
-setup_lock_face_pam
 echo -e "\nNow let's verify that it's working correctly. Look into the camera again.\n"
 
-if ! sudo pamtester "${lock_pam##*/}" "$USER" authenticate; then
-  sudo rm -f "$lock_pam"
+if ! verify_face; then
   echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
   exit 1
 fi
 
-setup_pam_config
+if (( use_auth )); then
+  setup_pam_config
+else
+  remove_pam_config
+fi
+
+if (( use_lock )); then
+  setup_lock_face_pam
+else
+  remove_lock_face_pam
+fi
+
+setup_face_conf
 
 echo -e "\e[32m\nPerfect! Face authentication is now configured.\e[0m"
-echo "You can use your face for sudo and polkit. The lock screen (Super + Ctrl + L) follows once the lock plugin reads the omarchy-lock-face PAM service."
+if (( use_auth )); then
+  echo "sudo and polkit: press Enter on the empty password prompt to use your face."
+fi
+if (( use_lock )); then
+  echo "Lock screen (Super + Ctrl + L): press Enter on the empty field to use your face."
+  echo "How many scans a lock allows, and for how long after locking, is set in $face_conf."
+fi
