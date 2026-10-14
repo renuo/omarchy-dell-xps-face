@@ -8,21 +8,53 @@
 # pam_exec.so does that through this helper instead: PAM_USER comes from
 # pam_exec, stdout goes to the PAM conversation, and the exit status carries
 # Howdy's verdict (0 match, 10 no model, 11 timeout, 12 abort, 13 too dark).
+#
+# sudo and polkit run their stacks with root's effective id, so pam_exec's
+# seteuid option suffices there. The lock screen runs its conversation as the
+# session user, and Howdy keeps compare.py and the models readable by root
+# only, so that phase re-executes the packaged copy through the passwordless
+# rule in etc/sudoers.d/omarchy-face-match. The account comes from PAM_USER
+# under pam_exec, which builds the environment itself, and from SUDO_USER under
+# sudo, which sets it after env_reset: a user can only ever match their own face.
 
 set -u
 
+# Whenever this holds root, resolve the tools it calls by bare name (logger)
+# from trusted directories only; a dev link prepends a checkout bin/ to sudo's
+# secure_path.
+if (( EUID == 0 )); then
+  export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+fi
+
 security_lib=/usr/lib/security
 compare="$security_lib/howdy/compare.py"
-user="${PAM_USER:-}"
+# The path etc/sudoers.d/omarchy-face-match names; the privileged half always
+# runs from there, never from whichever copy pam_exec invoked.
+PACKAGED_PATH=/usr/bin/omarchy-face-match
 
+if (( $# != 0 )); then
+  echo "omarchy-face-match takes no arguments; pam_exec provides PAM_USER" >&2
+  exit 1
+fi
+
+user="${PAM_USER:-${SUDO_USER:-}}"
 if [[ -z $user || $user == "." || $user == ".." || $user == */* || $user == *[[:space:]]* ]]; then
-  echo "omarchy-face-match: PAM_USER is missing or unsafe" >&2
+  echo "omarchy-face-match: no account to match" >&2
   exit 1
 fi
 
 if [[ ! -r $compare ]]; then
-  echo "omarchy-face-match: cannot read $compare; pam_exec needs the seteuid option" >&2
-  exit 1
+  if (( EUID == 0 )); then
+    echo "omarchy-face-match: $compare is missing; is Howdy installed?" >&2
+    exit 1
+  fi
+  # The session user's own conversation: elevate the packaged copy through the
+  # sudoers grant without ever prompting, and only for that same user.
+  if [[ $user != "$(id -un)" ]]; then
+    echo "omarchy-face-match: $user is not the session user" >&2
+    exit 1
+  fi
+  exec sudo -n "$PACKAGED_PATH"
 fi
 
 logger -p auth.info -t howdy "Attempting facial authentication for user $user"

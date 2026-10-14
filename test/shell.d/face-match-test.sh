@@ -68,8 +68,16 @@ for user in "" "." ".." "../root" "alice bob" "a/b"; do
 done
 pass "a missing or unsafe PAM_USER fails before Howdy runs"
 
+# Without a readable compare.py the helper elevates instead; that phase has its
+# own suite (face-match-sudoers-test.sh). A stub sudo keeps it out of here.
+cat >"$stub_bin/sudo" <<'SH'
+#!/bin/bash
+printf 'sudo %s\n' "$*" >>"$TEST_LOG"
+exit 1
+SH
+chmod +x "$stub_bin/sudo"
 rm "$seclib/howdy/compare.py"
-invoke 0 && fail "a missing compare.py fails"
+invoke 0 "$(id -un)" && fail "a missing compare.py fails"
 ! grep -q '^python3' "$log" || fail "nothing runs without compare.py" "$(cat "$log")"
-grep -q 'seteuid' "$output" || fail "the unreadable tree points at pam_exec's seteuid option" "$(cat "$output")"
-pass "an unreadable Howdy tree fails with a hint instead of running"
+grep -q '^sudo' "$log" || fail "the session user's phase hands over to sudo" "$(cat "$log")"
+pass "an unreadable Howdy tree hands over to the privileged half instead of running"
