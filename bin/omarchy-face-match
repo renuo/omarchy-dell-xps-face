@@ -32,9 +32,28 @@ compare="$security_lib/howdy/compare.py"
 # runs from there, never from whichever copy pam_exec invoked.
 PACKAGED_PATH=/usr/bin/omarchy-face-match
 
+# Presence is not consent: a camera sees a face whether or not its owner meant
+# to approve anything. The hint line in sudo's and polkit's stacks says so
+# before pam_exec shows the usual password prompt with expose_authtok, and the
+# answer arrives here on stdin: an empty line is the go-ahead, anything typed
+# is a password meant for pam_unix, which gets it through try_first_pass, so
+# the camera stays dark and nothing is echoed or logged.
+if [[ $# == 1 && $1 == --hint ]]; then
+  echo "Press Enter to confirm with your face, or type your password."
+  exit 0
+fi
+
 if (( $# != 0 )); then
   echo "omarchy-face-match takes no arguments; pam_exec provides PAM_USER" >&2
   exit 1
+fi
+
+if [[ ! -t 0 ]]; then
+  response=$(cat)
+  if [[ -n $response ]]; then
+    unset response
+    exit 1
+  fi
 fi
 
 user="${PAM_USER:-${SUDO_USER:-}}"

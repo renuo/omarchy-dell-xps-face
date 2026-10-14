@@ -16,7 +16,9 @@ copy="$test_tmp/remove.sh"
 mkdir -p "$stub_bin"
 
 gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-stable_line='auth      sufficient pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match'
+face_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
+hint_line='auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint'
+stable_line='auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match'
 legacy_line='auth      sufficient pam_python.so /usr/lib/security/howdy/pam.py'
 beta_line='auth      sufficient pam_howdy.so'
 fingerprint_line='auth      sufficient pam_fprintd.so'
@@ -105,8 +107,8 @@ log_line_of() {
 }
 
 reset_fixture
-write_stack sudo "$gate" "$stable_line" "$gate" "$fingerprint_line" "$includes"
-write_stack polkit-1 "$gate" "$stable_line" "$includes"
+write_stack sudo "$face_gate" "$hint_line" "$stable_line" "$gate" "$fingerprint_line" "$includes"
+write_stack polkit-1 "$face_gate" "$hint_line" "$stable_line" "$includes"
 printf 'auth required pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match\n' >"$pamd/omarchy-lock-face"
 invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output"; cat "$log")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||

@@ -19,8 +19,11 @@ output="$test_tmp/output"
 copy="$test_tmp/setup.sh"
 mkdir -p "$stub_bin"
 
-gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-stable_module="pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match"
+# The face block skips two lines (hint and module); fingerprint's gate skips one.
+gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
+gate1='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
+hint='auth      optional pam_exec.so quiet stdout /usr/bin/omarchy-face-match --hint'
+stable_module="pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match"
 legacy_module="pam_python.so $seclib/howdy/pam.py"
 beta_module="pam_howdy.so"
 
@@ -216,11 +219,11 @@ pass "a failed verification removes the lock PAM file and leaves sudo and polkit
 
 reset_fixture
 invoke_setup ready stable || fail "setup succeeds with a ready camera and a verified face" "$(cat "$output"; cat "$log")"
-expected_sudo=$(printf '%s\n' "$gate" "auth      sufficient $stable_module" '#%PAM-1.0' \
+expected_sudo=$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module" '#%PAM-1.0' \
   $'auth\t\tinclude\t\tsystem-auth' $'account\t\tinclude\t\tsystem-auth' $'session\t\tinclude\t\tsystem-auth')
 [[ $(<"$pamd/sudo") == "$expected_sudo" ]] ||
   fail "sudo gets the gate and the face module on top of its stack" "$(cat "$pamd/sudo")"
-expected_polkit=$(printf '%s\n' "$gate" "auth      sufficient $stable_module" 'auth      include system-auth' '' \
+expected_polkit=$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module" 'auth      include system-auth' '' \
   'account   include system-auth' 'password  include system-auth' 'session   include system-auth')
 [[ $(<"$pamd/polkit-1") == "$expected_polkit" ]] ||
   fail "a missing polkit stack is created with the gate and the face module" "$(cat "$pamd/polkit-1")"
@@ -234,7 +237,7 @@ grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the
 ! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
 (( $(log_line_of $'sudo\thowdy\tadd') < $(log_line_of $'sudo\ttee') )) || fail "enrollment precedes the lock PAM file" "$(cat "$log")"
 (( $(log_line_of $'sudo\ttee') < $(log_line_of $'sudo\tpamtester') )) || fail "the lock PAM file precedes verification" "$(cat "$log")"
-(( $(log_line_of $'sudo\tpamtester') < $(log_line_of $'sudo\tsed\t-i\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
+(( $(log_line_of $'sudo\tpamtester') < $(log_line_of $'sudo\tsed\t-i\t-e\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
 grep -q 'Perfect! Face authentication is now configured' "$output" || fail "success is reported" "$(cat "$output")"
 pass "setup enrolls, verifies through PAM, then configures sudo, polkit and the lock service"
 
@@ -246,11 +249,11 @@ invoke_setup ready stable || fail "setup succeeds a second time" "$(cat "$output
 pass "setup is idempotent on an already configured stack"
 
 reset_fixture
-printf '%s\n' "$gate" 'auth      sufficient pam_fprintd.so' >"$test_tmp/fingerprint-top"
+printf '%s\n' "$gate1" 'auth      sufficient pam_fprintd.so' >"$test_tmp/fingerprint-top"
 cat "$test_tmp/fingerprint-top" "$pamd/sudo" >"$test_tmp/sudo-with-fingerprint"
 cp "$test_tmp/sudo-with-fingerprint" "$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds beside a fingerprint stack" "$(cat "$output")"
-expected_sudo=$(printf '%s\n' "$gate" "auth      sufficient $stable_module"; cat "$test_tmp/sudo-with-fingerprint")
+expected_sudo=$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module"; cat "$test_tmp/sudo-with-fingerprint")
 [[ $(<"$pamd/sudo") == "$expected_sudo" ]] ||
   fail "face goes on top with its own gate and the fingerprint pair stays intact" "$(cat "$pamd/sudo")"
 pass "setup keeps an existing fingerprint stack and its gate"
@@ -259,24 +262,31 @@ reset_fixture
 printf 'auth      sufficient %s\n%s' "$stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds over a gateless face line" "$(cat "$output")"
 (( $(grep -c -- 'omarchy-hw-laptop-closed' "$pamd/sudo") == 1 )) || fail "a missing gate is added once" "$(cat "$pamd/sudo")"
-[[ $(sed -n 1p "$pamd/sudo") == "$gate" && $(sed -n 2p "$pamd/sudo") == "auth      sufficient $stable_module" ]] ||
-  fail "the gate lands directly above the face module" "$(cat "$pamd/sudo")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
+  fail "the gate and the hint land directly above the face module" "$(cat "$pamd/sudo")"
+(( $(grep -c -- 'omarchy-face-match' "$pamd/sudo") == 2 )) || fail "the stray face line is replaced, not duplicated" "$(cat "$pamd/sudo")"
 pass "setup repairs a face line that lost its clamshell gate"
 
 reset_fixture
-printf '%s\n%s\n%s' "$gate" "auth      sufficient $legacy_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
+printf '%s\n%s\n%s' "$gate1" "auth      sufficient $legacy_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds over a pam_python face line" "$(cat "$output")"
-[[ $(sed -n 1p "$pamd/sudo") == "$gate" && $(sed -n 2p "$pamd/sudo") == "auth      sufficient $stable_module" ]] ||
-  fail "the pam_python line is replaced in place under its gate" "$(cat "$pamd/sudo")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
+  fail "the pam_python pair is replaced by the asking block" "$(cat "$pamd/sudo")"
 ! grep -q 'pam_python' "$pamd/sudo" || fail "no pam_python line remains" "$(cat "$pamd/sudo")"
-(( $(grep -c -- 'omarchy-face-match' "$pamd/sudo") == 1 )) || fail "the face line is not duplicated" "$(cat "$pamd/sudo")"
-grep -q 'Replacing the pam_python glue' "$output" || fail "the replacement is announced" "$(cat "$output")"
-pass "setup replaces the pam_python glue of an earlier setup with the pam_exec helper"
+(( $(grep -c -- 'omarchy-hw-laptop-closed' "$pamd/sudo") == 1 )) || fail "the old gate goes with its module" "$(cat "$pamd/sudo")"
+pass "setup replaces the pam_python glue of an earlier setup with the asking block"
+
+reset_fixture
+printf '%s\n%s\n%s' "$gate1" "auth      sufficient $stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
+invoke_setup ready stable || fail "setup succeeds over a face line that never asked" "$(cat "$output")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
+  fail "a face line without the hint and expose_authtok is upgraded to the asking block" "$(cat "$pamd/sudo")"
+pass "setup upgrades a face line that scanned without asking"
 
 reset_fixture
 invoke_setup ready beta || fail "setup succeeds with the beta layout" "$(cat "$output"; cat "$log")"
-[[ $(sed -n 2p "$pamd/sudo") == "auth      sufficient $beta_module" ]] ||
-  fail "the beta layout uses the native module" "$(cat "$pamd/sudo")"
+[[ $(sed -n 1,2p "$pamd/sudo") == "$(printf '%s\n' "$gate1" "auth      sufficient $beta_module")" ]] ||
+  fail "the beta layout uses the native module behind a one-line gate and no hint" "$(cat "$pamd/sudo")"
 ! grep -q 'aur pam-python' "$log" || fail "the beta layout needs no pam-python" "$(cat "$log")"
 grep -qxF "device_path = /dev/video51" "$etc_howdy/config.ini" ||
   fail "Howdy's beta config points at the IR device" "$(cat "$etc_howdy/config.ini")"

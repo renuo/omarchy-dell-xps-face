@@ -52,7 +52,7 @@ invoke() {
   local status=0 user=$1
   shift
   : >"$log"
-  TEST_LOG="$log" PAM_USER="$user" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" "$@" >"$output" 2>&1 || status=$?
+  TEST_LOG="$log" PAM_USER="$user" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" "$@" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
 
@@ -69,5 +69,6 @@ invoke root && fail "another account must not be matched from a session"
 grep -q 'not the session user' "$output" || fail "the mismatch is explained" "$(cat "$output")"
 invoke "" && fail "an empty PAM_USER fails"
 invoke "$me" extra && fail "arguments are refused"
+invoke "$me" --hint || fail "--hint is the one accepted argument"
 [[ -z $(<"$log") ]] || fail "refused invocations never reach sudo" "$(cat "$log")"
 pass "only the session user's own account is ever elevated, and never with arguments"

@@ -35,15 +35,26 @@ SH
 chmod +x "$stub_bin"/*
 : >"$seclib/howdy/compare.py"
 
-# invoke <status> [user]
+# invoke <status> [user] [stdin]
 invoke() {
   local status=0
 
   : >"$log"
-  TEST_LOG="$log" TEST_STATUS="$1" PAM_USER="${2-alice}" PATH="$stub_bin:/usr/bin:/bin" \
+  printf '%s' "${3-}" | TEST_LOG="$log" TEST_STATUS="$1" PAM_USER="${2-alice}" PATH="$stub_bin:/usr/bin:/bin" \
     bash "$copy" >"$output" 2>&1 || status=$?
   return "$status"
 }
+
+hint=$(bash "$copy" --hint 2>&1) || fail "--hint succeeds"
+[[ $hint == "Press Enter to confirm with your face, or type your password." ]] || fail "--hint explains the consent" "$hint"
+bash "$copy" --hint extra >/dev/null 2>&1 && fail "--hint takes nothing else"
+pass "--hint prints the heads-up for the stack"
+
+invoke 0 alice "hunter2" && fail "a typed password declines the scan"
+[[ -z $(<"$log") && -z $(<"$output") ]] || fail "a typed password runs nothing and prints nothing" "$(cat "$log" "$output")"
+invoke 0 alice $'\n' || fail "an empty line consents"
+grep -q '^python3' "$log" || fail "an empty line runs the scan" "$(cat "$log")"
+pass "typing a password keeps the camera dark; an empty line starts the scan"
 
 invoke 0 || fail "a match exits 0"
 grep -qxF "python3 $seclib/howdy/compare.py alice" "$log" || fail "compare.py runs for the PAM user" "$(cat "$log")"
