@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh etc/sudoers.d default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
+for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -32,7 +32,10 @@ for test in "$ROOT"/test/shell.d/*-test.sh; do
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
 install -m 644 "$ROOT"/install/hardware/intel/ipu7-ir-camera.sh "$checkout/install/hardware/intel/"
-install -m 644 "$ROOT"/etc/sudoers.d/omarchy-face-match "$checkout/etc/sudoers.d/"
+# The lock's grant is installed by the setup, only for the lock screen; an
+# earlier overlay shipped it under etc/, where every machine would get it.
+install -D -m 644 "$ROOT"/default/sudoers.d/omarchy-face-match -t "$checkout/default/sudoers.d/"
+rm -f "$checkout/etc/sudoers.d/omarchy-face-match"
 install -m 644 "$ROOT"/default/hypr/toggles/face-key.lua "$checkout/default/hypr/toggles/"
 # Units, PAM services and the lock's limits the setup copies into place.
 install -D -m 644 "$ROOT"/default/systemd/system/omarchy-face-key.* -t "$checkout/default/systemd/system/"

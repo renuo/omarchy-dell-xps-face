@@ -10,6 +10,7 @@ verify_pam=/etc/pam.d/omarchy-face-verify
 face_conf=/etc/omarchy/face.conf
 key_socket=/etc/systemd/system/omarchy-face-key.socket
 key_service=/etc/systemd/system/omarchy-face-key.service
+lock_grant=/etc/sudoers.d/omarchy-face-match
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
 # Resolve the invoking account before changing authentication or packages.
@@ -76,6 +77,9 @@ echo -e "\e[32mRemoving face authentication.\n\e[0m"
 remove_face_lines /etc/pam.d/sudo sudo
 remove_face_lines /etc/pam.d/polkit-1 polkit
 remove_file "$lock_pam" "lock screen face authentication"
+# /etc/sudoers.d is root's alone, so the lock's grant goes without a look first,
+# and only once the lock no longer offers the face.
+sudo rm -f "$lock_grant"
 remove_file "$verify_pam" "the face verification service an interrupted setup left"
 remove_file "$face_conf" "the lock screen's face limits"
 remove_face_key

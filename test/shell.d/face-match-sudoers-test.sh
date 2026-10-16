@@ -5,8 +5,13 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
 helper="$ROOT/bin/omarchy-face-match"
-sudoers_file="$ROOT/etc/sudoers.d/omarchy-face-match"
+sudoers_file="$ROOT/default/sudoers.d/omarchy-face-match"
 rule='%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-face-match ""'
+
+# The grant serves the lock screen alone, so the setup installs it only when
+# the face is wanted there; shipped under etc/ it would reach every machine.
+[[ ! -e $ROOT/etc/sudoers.d/omarchy-face-match ]] || fail "the face grant does not ship into /etc unconditionally"
+pass "the face grant ships as a default the setup installs, not under etc/"
 
 # Exactly one rule, matched whole. The empty argument string is what makes
 # sudoers refuse any argument at all; dropping it would read as "any arguments".

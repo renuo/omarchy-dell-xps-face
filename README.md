@@ -45,7 +45,7 @@ A lock offers one scan within an hour of locking, both set in `/etc/omarchy/face
 bash bin/setup                                           # shellcheck, jq, executable bits
 bin/check                                                # lint and all tests
 bin/apply-to-checkout ~/Work/omarchy/omarchy-installer   # after a change, then omarchy restart shell
-omarchy dev pkg-test                                     # after a change to the helpers or the sudoers rule
+omarchy dev pkg-test                                     # after a change to the helpers
 bin/run                                                  # every manual test, step by step; --list names them
 ```
 
@@ -56,8 +56,8 @@ The checkout's diff is the pull request; `I18N_STRUCTURAL=1 ./test/shell` there 
 ```
 bin/omarchy-*                      the commands: hardware check, setup and remove wizards, PAM helper, key service
 default/                           the menu rows, the Copilot key binding, the English strings, and the
-                                   key service's units, PAM services and lock limits the setup copies
-etc/sudoers.d/                     the grant the lock screen's helper runs through
+                                   key service's units, PAM services, lock limits and the lock screen's
+                                   sudoers grant the setup copies
 install/                           the hardware leaf for the driver package and the first-run invitation
 shell/plugins/                     upstream's lock and polkit plugins with the face added
 packaging/hm1092-ir-camera/        the driver: DKMS sensor module and bridge entry, grayscale relay

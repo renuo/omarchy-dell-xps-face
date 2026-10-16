@@ -95,12 +95,11 @@ face_line='auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok 
 reset_fixture() {
   rm -rf "${test_tmp:?}/usr" "$pamd" "$omarchy" "$home" "$face_conf"*
   mkdir -p "$usr_bin" "$pamd" "$plugins" "$omarchy/bin" "$omarchy/default/hypr/toggles" "$omarchy/default/omarchy" \
-    "$omarchy/etc/sudoers.d" "$omarchy/shell/plugins"
+    "$omarchy/shell/plugins"
   cp "$ROOT"/bin/omarchy-* "$omarchy/bin/"
   cp "$ROOT/default/hypr/toggles/face-key.lua" "$omarchy/default/hypr/toggles/"
-  cp -r "$ROOT/default/systemd" "$ROOT/default/pam.d" "$omarchy/default/"
+  cp -r "$ROOT/default/systemd" "$ROOT/default/pam.d" "$ROOT/default/sudoers.d" "$omarchy/default/"
   cp "$ROOT/default/omarchy/face.conf" "$omarchy/default/omarchy/"
-  cp "$ROOT/etc/sudoers.d/omarchy-face-match" "$omarchy/etc/sudoers.d/"
   cp -r "$ROOT/shell/plugins/lock" "$ROOT/shell/plugins/polkit" "$omarchy/shell/plugins/"
   grep '"\(setup\|remove\).security.face"' "$ROOT/default/omarchy/omarchy-menu.jsonc" >"$omarchy/default/omarchy/omarchy-menu.jsonc"
   cp "$ROOT/bin/omarchy-face-match" "$ROOT/bin/omarchy-face-key" "$usr_bin/"
@@ -157,10 +156,16 @@ grep -qF "bin/apply-to-checkout $omarchy" "$output" || fail "applying the overla
 ! grep -q 'pkg-test' "$output" || fail "packaged helpers that are current ask for no package build" "$(cat "$output")"
 reset_fixture
 echo '# edited' >>"$usr_bin/omarchy-face-key"
-TEST_GRANT=1 invoke -- linked && fail "stale packaged helpers fail"
+invoke -- linked && fail "stale packaged helpers fail"
 grep -qF "$usr_bin/omarchy-face-key" "$output" || fail "the stale packaged helper is named" "$(cat "$output")"
-grep -q 'grant' "$output" || fail "a missing grant is named" "$(cat "$output")"
 grep -q 'omarchy dev pkg-test' "$output" || fail "building the packages from the checkout is named as the fix" "$(cat "$output")"
+reset_fixture
+TEST_GRANT=1 invoke -- linked && fail "a lock screen face without its grant fails"
+grep -q "the lock's sudoers grant" "$output" || fail "a missing grant is named" "$(cat "$output")"
+grep -q 'omarchy setup security face' "$output" || fail "the setup, which installs the grant, is named as the fix" "$(cat "$output")"
+! grep -q 'pkg-test' "$output" || fail "the packages do not carry the grant" "$(cat "$output")"
+rm "$pamd/omarchy-lock-face"
+TEST_GRANT=1 invoke -- linked || fail "without the face on the lock screen no grant is needed" "$(cat "$output")"
 reset_fixture
 mkdir -p "$plugins/alice.lock"
 printf '{"id":"alice.lock","omarchy":{"clonedFrom":"omarchy.lock"}}\n' >"$plugins/alice.lock/manifest.json"

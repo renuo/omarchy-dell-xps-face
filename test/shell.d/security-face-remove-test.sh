@@ -12,6 +12,7 @@ stub_bin="$test_tmp/bin"
 pamd="$test_tmp/etc/pam.d"
 omarchy_etc="$test_tmp/etc/omarchy"
 units="$test_tmp/etc/systemd/system"
+sudoersd="$test_tmp/etc/sudoers.d"
 log="$test_tmp/calls.log"
 output="$test_tmp/output"
 copy="$test_tmp/remove.sh"
@@ -27,10 +28,11 @@ fingerprint_line='auth      sufficient pam_fprintd.so'
 includes=$(printf '%s\n' $'auth\t\tinclude\t\tsystem-auth' $'account\t\tinclude\t\tsystem-auth')
 
 for literal in 'lock_pam=/etc/pam.d/omarchy-lock-face' 'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' \
-  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service'; do
+  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service' \
+  'lock_grant=/etc/sudoers.d/omarchy-face-match'; do
   (( $(grep -Fxc "$literal" "$remove") == 1 )) || fail "removal names $literal exactly once"
 done
-sed -e "s|/etc/pam.d/|$pamd/|g" -e "s|/etc/omarchy/|$omarchy_etc/|g" -e "s|/etc/systemd/system/|$units/|g" \
+sed -e "s|/etc/pam.d/|$pamd/|g" -e "s|/etc/omarchy/|$omarchy_etc/|g" -e "s|/etc/systemd/system/|$units/|g" -e "s|/etc/sudoers.d/|$sudoersd/|g" \
   -e "s|/usr/bin/id|$test_tmp/trusted-id|g" "$remove" >"$copy"
 pass "removal names its fixed paths, and the test drives a retargeted copy"
 
@@ -63,7 +65,8 @@ case "${1:-}" in
   rm)
     case "$*" in
       "rm -f $TEST_PAMD/omarchy-lock-face" | "rm -f $TEST_PAMD/omarchy-face-verify" | "rm -f $TEST_OMARCHY_ETC/face.conf" | \
-        "rm -f $TEST_UNITS/omarchy-face-key.socket" | "rm -f $TEST_UNITS/omarchy-face-key.service") ;;
+        "rm -f $TEST_UNITS/omarchy-face-key.socket" | "rm -f $TEST_UNITS/omarchy-face-key.service" | \
+        "rm -f $TEST_SUDOERSD/omarchy-face-match") ;;
       *) reject "$@" ;;
     esac
     exec /usr/bin/rm -f "$3"
@@ -115,15 +118,15 @@ write_stack() {
 
 reset_fixture() {
   : >"$log"
-  rm -rf "$pamd" "$omarchy_etc" "$units" "$test_tmp/toggle"
-  mkdir -p "$pamd" "$omarchy_etc" "$units"
+  rm -rf "$pamd" "$omarchy_etc" "$units" "$sudoersd" "$test_tmp/toggle"
+  mkdir -p "$pamd" "$omarchy_etc" "$units" "$sudoersd"
 }
 
 # invoke_remove [user] [howdy-present] [clear-fail]
 invoke_remove() {
   local status=0
 
-  TEST_LOG="$log" TEST_PAMD="$pamd" TEST_OMARCHY_ETC="$omarchy_etc" TEST_UNITS="$units" TEST_TOGGLE="$test_tmp/toggle" \
+  TEST_LOG="$log" TEST_PAMD="$pamd" TEST_OMARCHY_ETC="$omarchy_etc" TEST_UNITS="$units" TEST_SUDOERSD="$sudoersd" TEST_TOGGLE="$test_tmp/toggle" \
     TEST_ID_NAME="${1-alice}" TEST_HOWDY_PRESENT="${2:-1}" \
     TEST_CLEAR_FAIL="${3:-0}" USER=spoofed SUDO_USER=spoofed \
     PATH="$stub_bin:/usr/bin:/bin" env -u SUDO_UID bash "$copy" </dev/null >"$output" 2>&1 || status=$?
@@ -139,6 +142,7 @@ write_stack sudo "$face_gate" "$hint_line" "$stable_line" "$gate" "$fingerprint_
 write_stack polkit-1 "$face_gate" "$hint_line" "$stable_line" "$includes"
 printf 'auth required pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match\n' >"$pamd/omarchy-lock-face"
 cp "$pamd/omarchy-lock-face" "$pamd/omarchy-face-verify"
+cp "$ROOT/default/sudoers.d/omarchy-face-match" "$sudoersd/"
 printf 'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60\n' >"$omarchy_etc/face.conf"
 : >"$units/omarchy-face-key.socket"
 : >"$units/omarchy-face-key.service"
@@ -148,6 +152,9 @@ invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output
   fail "sudo keeps the fingerprint pair and loses only the face pair" "$(cat "$pamd/sudo")"
 [[ $(<"$pamd/polkit-1") == "$includes" ]] || fail "polkit loses the face pair" "$(cat "$pamd/polkit-1")"
 [[ ! -e $pamd/omarchy-lock-face ]] || fail "the lock PAM service is removed"
+[[ ! -e $sudoersd/omarchy-face-match ]] || fail "the lock's grant is removed"
+(( $(log_line_of $'sudo\trm\t-f\t'"$pamd/omarchy-lock-face") < $(log_line_of $'sudo\trm\t-f\t'"$sudoersd/omarchy-face-match") )) ||
+  fail "the lock stops offering the face before its grant goes" "$(cat "$log")"
 [[ ! -e $pamd/omarchy-face-verify ]] || fail "a verification service an interrupted setup left is removed"
 [[ ! -e $omarchy_etc/face.conf ]] || fail "the lock screen's face policy is removed"
 (( $(log_line_of $'sudo\trm') < $(log_line_of $'sudo\thowdy') )) || fail "PAM is cleaned before the models" "$(cat "$log")"
@@ -213,7 +220,9 @@ pass "removal leaves a stack without face lines alone"
 reset_fixture
 write_stack sudo "$includes"
 invoke_remove alice 0 || fail "removal succeeds when nothing is configured" "$(cat "$output")"
-! grep -q '^sudo' "$log" || fail "nothing configured runs no privileged command" "$(cat "$log")"
+# /etc/sudoers.d is root's alone, so the grant is removed without a look first.
+[[ $(grep '^sudo' "$log") == $'sudo\trm\t-f\t'"$sudoersd/omarchy-face-match" ]] ||
+  fail "nothing configured runs no privileged command but clearing the grant" "$(cat "$log")"
 ! grep -q '^toggle' "$log" || fail "a Copilot key that was never taken stays with the menu" "$(cat "$log")"
 grep -q '^package howdy' "$log" || fail "the package drop still runs" "$(cat "$log")"
 pass "removal is idempotent when face authentication was never set up"

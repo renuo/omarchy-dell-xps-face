@@ -15,6 +15,7 @@ pamd="$test_tmp/pamd"
 seclib="$test_tmp/security"
 etc_howdy="$test_tmp/howdy-etc"
 omarchy_etc="$test_tmp/omarchy-etc"
+sudoersd="$test_tmp/sudoers-d"
 units="$test_tmp/units"
 face_key="$test_tmp/omarchy-face-key"
 ir_device="$test_tmp/hm1092-ir"
@@ -38,7 +39,7 @@ legacy_module="pam_python.so $seclib/howdy/pam.py"
 for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face' \
   'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' 'face_key=/usr/bin/omarchy-face-key' \
   'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service' \
-  'face_device=/dev/hm1092-ir'; do
+  'face_device=/dev/hm1092-ir' 'lock_grant=/etc/sudoers.d/omarchy-face-match'; do
   (( $(grep -Fxc "$literal" "$setup") == 1 )) || fail "setup names $literal exactly once"
 done
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
@@ -47,8 +48,9 @@ sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
   -e "s|/etc/pam.d/|$pamd/|g" \
   -e "s|/etc/howdy/|$etc_howdy/|g" \
   -e "s|/etc/systemd/system/|$units/|g" \
-  -e "s|/etc/omarchy/|$omarchy_etc/|g" "$setup" >"$copy"
-! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/\|/etc/systemd/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
+  -e "s|/etc/omarchy/|$omarchy_etc/|g" \
+  -e "s|/etc/sudoers.d/|$sudoersd/|g" "$setup" >"$copy"
+! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/\|/etc/systemd/\|/etc/sudoers.d/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
 pass "setup names its fixed paths once each, and the test drives a retargeted copy"
 
 # The predicate takes no arguments; the driver is the package, and the device
@@ -63,6 +65,14 @@ SH
 cat >"$stub_bin/omarchy-pkg-present" <<'SH'
 #!/bin/bash
 [[ $* == hm1092-ir-camera && $TEST_HW != nodriver ]]
+SH
+
+# visudo parses unprivileged; the stub records what it was asked to parse.
+cat >"$stub_bin/visudo" <<'SH'
+#!/bin/bash
+printf 'visudo %s\n' "$*" >>"$TEST_LOG"
+[[ $1 == -cf ]] && cp "$2" "$TEST_TMP/grant-parsed"
+[[ ${TEST_VISUDO:-ok} == ok ]]
 SH
 
 cat >"$stub_bin/omarchy-pkg-aur-add" <<'SH'
@@ -137,11 +147,15 @@ case "${1:-}" in
     exec /usr/bin/tee "$2"
     ;;
   install)
-    # Root-owned copies of the checkout's default files; the scratch tree
-    # cannot be chowned, so the owner flags are checked, not applied.
-    (( $# == 8 )) && [[ $2 == -Dm644 && "$3 $4 $5 $6" == "-o root -g root" ]] || reject "$@"
-    [[ $7 == "$TEST_DEFAULTS"/* ]] && in_scratch "$8" || reject "$@"
-    exec /usr/bin/install -Dm644 "$7" "$8"
+    # Root-owned copies of the checkout's default files, and the validated
+    # copy of the lock's grant; the scratch tree cannot be chowned, so the
+    # owner flags are checked, not applied.
+    (( $# == 8 )) && [[ "$3 $4 $5 $6" == "-o root -g root" ]] && in_scratch "$8" || reject "$@"
+    if [[ $2 == -Dm644 && $7 == "$TEST_DEFAULTS"/* ]]; then
+      exec /usr/bin/install -Dm644 "$7" "$8"
+    fi
+    [[ $2 == -Dm440 && $8 == "$TEST_TMP/sudoers-d/omarchy-face-match" ]] || reject "$@"
+    exec /usr/bin/install -Dm440 "$7" "$8"
     ;;
   rm)
     (( $# == 3 )) && [[ $2 == "-f" ]] && in_scratch "$3" || reject "$@"
@@ -174,8 +188,8 @@ chmod +x "$stub_bin"/*
 
 reset_fixture() {
   : >"$log"
-  rm -rf "$pamd" "$seclib" "$etc_howdy" "$omarchy_etc" "$units"
-  mkdir -p "$pamd" "$seclib/howdy" "$etc_howdy" "$units"
+  rm -rf "$pamd" "$seclib" "$etc_howdy" "$omarchy_etc" "$units" "$sudoersd" "$test_tmp/grant-parsed"
+  mkdir -p "$pamd" "$seclib/howdy" "$etc_howdy" "$units" "$sudoersd"
   printf '#!/bin/bash\n' >"$face_key"
   chmod +x "$face_key"
   printf '#%%PAM-1.0\nauth\t\tinclude\t\tsystem-auth\naccount\t\tinclude\t\tsystem-auth\nsession\t\tinclude\t\tsystem-auth\n' >"$pamd/sudo"
@@ -195,7 +209,7 @@ invoke_setup() {
   fi
   TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
-    TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" USER=alice \
+    TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" TEST_VISUDO="${TEST_VISUDO:-ok}" USER=alice \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -210,6 +224,7 @@ assert_no_mutation() {
   ! grep -q '^sudo' "$log" || fail "$description" "$(cat "$log")"
   [[ ! -e $pamd/omarchy-lock-face && ! -e $pamd/omarchy-face-verify && ! -e $pamd/polkit-1 ]] || fail "$description left PAM files behind"
   [[ ! -e $omarchy_etc/face.conf ]] || fail "$description left the face policy behind"
+  [[ ! -e $sudoersd/omarchy-face-match ]] || fail "$description left the lock's grant behind"
   [[ -z $(ls -A "$units") ]] || fail "$description left the key service behind"
   ! grep -q '^toggle' "$log" || fail "$description took the Copilot key" "$(cat "$log")"
 }
@@ -293,6 +308,7 @@ grep -q 'Verification failed' "$output" || fail "a failed verification is report
 [[ ! -e $pamd/polkit-1 ]] || fail "a failed verification creates no polkit stack"
 ! grep -q 'omarchy-face-match' "$pamd/sudo" || fail "a failed verification leaves sudo alone" "$(cat "$pamd/sudo")"
 [[ ! -e $omarchy_etc/face.conf ]] || fail "a failed verification writes no face policy"
+[[ ! -e $sudoersd/omarchy-face-match ]] || fail "a failed verification installs no grant"
 [[ -f $units/omarchy-face-key.socket ]] || fail "the key service verification needed stays for the next run"
 pass "a failed verification removes its PAM service and touches no stack"
 
@@ -354,7 +370,13 @@ grep -qx "auth       required                    $lock_module" "$ROOT/default/pa
 [[ $(grep -v -e '^#' -e '^$' "$omarchy_etc/face.conf") == $'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60' ]] ||
   fail "the face policy allows one scan within an hour of locking" "$(cat "$omarchy_etc/face.conf")"
 grep -q 'Perfect! Face authentication is now configured' "$output" || fail "success is reported" "$(cat "$output")"
-pass "setup enrolls, verifies through PAM, then configures sudo, polkit, the lock service and its policy"
+cmp -s "$ROOT/default/sudoers.d/omarchy-face-match" "$sudoersd/omarchy-face-match" || fail "the lock screen gets the grant its helper elevates through"
+[[ $(stat -c %a "$sudoersd/omarchy-face-match") == 440 ]] || fail "the grant is installed 0440, or sudo ignores it" "$(stat -c %a "$sudoersd/omarchy-face-match")"
+cmp -s "$ROOT/default/sudoers.d/omarchy-face-match" "$test_tmp/grant-parsed" || fail "visudo parses the grant before it is installed"
+(( $(log_line_of 'visudo -cf') < $(log_line_of $'\t'"$sudoersd/omarchy-face-match") )) || fail "the grant is parsed before it is installed" "$(cat "$log")"
+(( $(log_line_of $'\t'"$sudoersd/omarchy-face-match") < $(log_line_of $'\t'"$pamd/omarchy-lock-face") )) ||
+  fail "the grant is in place before the lock offers the face" "$(cat "$log")"
+pass "setup enrolls, verifies through PAM, then configures sudo, polkit, the lock service with its grant and its policy"
 
 before_sudo=$(<"$pamd/sudo")
 before_polkit=$(<"$pamd/polkit-1")
@@ -368,10 +390,14 @@ pass "setup is idempotent on an already configured stack and keeps an edited pol
 
 reset_fixture
 printf '#%%PAM-1.0\nauth required %s\n' "$lock_module" >"$pamd/omarchy-lock-face"
+cp "$ROOT/default/sudoers.d/omarchy-face-match" "$sudoersd/"
 TEST_CHOICE=2 invoke_setup ready stable || fail "setup succeeds for sudo and polkit only" "$(cat "$output"; cat "$log")"
 [[ $(sed -n 1,3p "$pamd/sudo") == "$(expected_block)" ]] || fail "sudo gets the asking block" "$(cat "$pamd/sudo")"
 [[ $(sed -n 1,3p "$pamd/polkit-1") == "$(expected_block)" ]] || fail "polkit gets the asking block" "$(cat "$pamd/polkit-1")"
 [[ ! -e $pamd/omarchy-lock-face ]] || fail "the lock service of an earlier run goes"
+[[ ! -e $sudoersd/omarchy-face-match ]] || fail "the lock's grant of an earlier run goes with it"
+(( $(log_line_of $'sudo\trm\t-f\t'"$pamd/omarchy-lock-face") < $(log_line_of $'sudo\trm\t-f\t'"$sudoersd/omarchy-face-match") )) ||
+  fail "the lock stops offering the face before its grant goes" "$(cat "$log")"
 [[ -f $omarchy_etc/face.conf ]] || fail "the face policy marks the setup done"
 pass "sudo and polkit only: both stacks ask for the face and the lock screen keeps the password"
 
@@ -385,7 +411,14 @@ TEST_CHOICE=3 invoke_setup ready stable || fail "setup succeeds for the lock scr
   fail "sudo loses the face block of an earlier run and keeps fingerprint with its gate" "$(cat "$pamd/sudo")"
 [[ ! -e $pamd/polkit-1 ]] || fail "no polkit stack is created for the lock screen alone"
 [[ -f $omarchy_etc/face.conf ]] || fail "the lock screen gets its face policy"
+[[ -f $sudoersd/omarchy-face-match ]] || fail "the lock screen gets its grant"
 pass "the lock screen only: the lock service is written and sudo and polkit keep the password"
+
+reset_fixture
+TEST_VISUDO=refuse invoke_setup ready stable && fail "setup fails when visudo refuses the grant"
+[[ ! -e $sudoersd/omarchy-face-match ]] || fail "a grant visudo refuses is never installed"
+[[ ! -e $pamd/omarchy-lock-face ]] || fail "a refused grant leaves the lock without the face"
+pass "a grant visudo refuses stops the lock screen's setup before sudo reads it"
 
 reset_fixture
 printf '%s\n' "$gate1" 'auth      sufficient pam_fprintd.so' >"$test_tmp/fingerprint-top"

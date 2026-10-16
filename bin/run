@@ -210,7 +210,7 @@ step_linked() {
     return
   fi
 
-  for source in "$ROOT"/bin/omarchy-* "$ROOT/default/hypr/toggles/face-key.lua" "$ROOT/etc/sudoers.d/omarchy-face-match" \
+  for source in "$ROOT"/bin/omarchy-* "$ROOT/default/hypr/toggles/face-key.lua" "$ROOT/default/sudoers.d/omarchy-face-match" \
     "$ROOT"/default/systemd/system/omarchy-face-key.* "$ROOT"/default/pam.d/omarchy-* "$ROOT/default/omarchy/face.conf" \
     "$ROOT"/shell/plugins/lock/* "$ROOT"/shell/plugins/polkit/*; do
     relative=${source#"$ROOT"/}
@@ -228,11 +228,12 @@ step_linked() {
       packaged=1
     fi
   done
-  if ! sudo -n -l "$bin_dir/omarchy-face-match" >/dev/null 2>&1; then
-    stale+=("the lock's sudoers grant")
-    packaged=1
-  fi
   (( ! packaged )) || fixes+=("omarchy dev pkg-test")
+  # The setup installs the grant along with the lock screen's face.
+  if uses lock && ! sudo -n -l "$bin_dir/omarchy-face-match" >/dev/null 2>&1; then
+    stale+=("the lock's sudoers grant")
+    fixes+=("omarchy setup security face")
+  fi
 
   # A clone of the lock or the polkit agent runs instead of the checkout's.
   for manifest in "$plugins_dir"/*/manifest.json; do

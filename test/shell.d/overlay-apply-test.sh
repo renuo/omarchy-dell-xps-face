@@ -28,6 +28,9 @@ printf '%s\n' '{' '  "root": {' '    "label": "Go"' '  },' '  "setup.security.fi
   '  "setup.security.sshd": {' '    "label": "SSH"' '  },' '  "remove.security.fido2": {' '    "label": "Fido2"' '  }' '}' \
   >"$checkout/default/i18n/en/menu.json"
 
+# An earlier version of the overlay shipped the lock's grant under etc/, where
+# every machine would get it.
+printf '%s\n' '%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-face-match ""' >"$checkout/etc/sudoers.d/omarchy-face-match"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies to the checkout"
 shell_catalog="$checkout/default/i18n/en/shell.json"
 jq -S . "$shell_catalog" | cmp -s - "$shell_catalog" || fail "the shell catalog stays sorted, as upstream keeps it" "$(cat "$shell_catalog")"
@@ -40,10 +43,11 @@ jq -e --slurpfile ours "$ROOT/default/i18n/en/shell.json" '. as $all | $ours[0] 
 pass "bin/apply-to-checkout merges the face strings into upstream's English catalogs"
 
 for file in systemd/system/omarchy-face-key.socket systemd/system/omarchy-face-key.service \
-  pam.d/omarchy-lock-face pam.d/omarchy-face-verify omarchy/face.conf; do
+  pam.d/omarchy-lock-face pam.d/omarchy-face-verify omarchy/face.conf sudoers.d/omarchy-face-match; do
   cmp -s "$ROOT/default/$file" "$checkout/default/$file" || fail "default/$file reaches the checkout, where the setup copies it from"
 done
-pass "bin/apply-to-checkout ships the files the setup copies into place"
+[[ ! -e $checkout/etc/sudoers.d/omarchy-face-match ]] || fail "the grant an earlier overlay put under etc/ is gone"
+pass "bin/apply-to-checkout ships the files the setup copies into place, and none under etc/"
 
 cp -r "$checkout/default/i18n" "$test_tmp/first"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies again"

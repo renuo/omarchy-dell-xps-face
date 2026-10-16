@@ -13,6 +13,8 @@ face_key=/usr/bin/omarchy-face-key
 # The driver package's udev rule names the relay device here whatever video
 # number it got at boot, and keeps it root's alone.
 face_device=/dev/hm1092-ir
+# The lock screen's helper elevates through this grant; nothing else uses it.
+lock_grant=/etc/sudoers.d/omarchy-face-match
 key_socket=/etc/systemd/system/omarchy-face-key.socket
 key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
@@ -160,8 +162,26 @@ remove_pam_config() {
   unconfigure_stack /etc/pam.d/polkit-1 polkit
 }
 
+# Parsed before it is installed: a sudoers file sudo refuses to read takes
+# every rule after it down with it, including the %wheel grant. The grant goes
+# in before the lock offers the face, and out only after.
+setup_lock_grant() {
+  local staged
+
+  staged=$(mktemp)
+  cp "$OMARCHY_PATH/default/sudoers.d/omarchy-face-match" "$staged"
+  if ! visudo -cf "$staged" >/dev/null; then
+    rm -f "$staged"
+    echo -e "\e[31mRefusing to install an invalid $lock_grant.\e[0m"
+    exit 1
+  fi
+  sudo install -Dm440 -o root -g root "$staged" "$lock_grant"
+  rm -f "$staged"
+}
+
 setup_lock_face_pam() {
   echo "Configuring lock screen for face authentication..."
+  setup_lock_grant
   install_default pam.d/omarchy-lock-face "$lock_pam"
 }
 
@@ -170,6 +190,8 @@ remove_lock_face_pam() {
     echo "Removing lock screen face authentication..."
     sudo rm -f "$lock_pam"
   fi
+  # /etc/sudoers.d is root's alone, so its contents cannot be checked first.
+  sudo rm -f "$lock_grant"
 }
 
 # The root service that reads the Copilot key, socket-activated so it runs
