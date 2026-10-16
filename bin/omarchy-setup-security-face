@@ -17,6 +17,12 @@ key_socket=/etc/systemd/system/omarchy-face-key.socket
 key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 
+# Files the setup owns whole ship in the checkout's default/, so an Omarchy
+# update reaches them; the setup copies them root-owned into place.
+install_default() {
+  sudo install -Dm644 -o root -g root "$OMARCHY_PATH/default/$1" "$2"
+}
+
 # Presence is not consent: a camera sees a face whether or not its owner meant
 # to approve anything, unlike a finger placed on a reader. So a scan waits for
 # the Copilot key, read by root from the keyboard itself (omarchy-face-key).
@@ -38,8 +44,9 @@ face_gate_skipping() {
 
 # Howdy's stable release ships a pam_python script, which needs Python 2, so
 # pam_exec runs omarchy-face-match around its compare.py instead (seteuid keeps
-# root for sudo and polkit, stdout feeds the prompt). This is the lock screen's
-# line, which never asks: the lock keeps it waiting for the key. The beta's
+# root for sudo and polkit, stdout feeds the prompt). This is the line
+# default/pam.d/omarchy-lock-face carries, which never asks: the lock keeps it
+# waiting for the key. The beta's
 # native pam_howdy.so scans the moment PAM reaches it and cannot wait for the
 # key, so only compare.py serves. The package's own file list answers this
 # even though the install is readable by root only.
@@ -155,13 +162,7 @@ remove_pam_config() {
 
 setup_lock_face_pam() {
   echo "Configuring lock screen for face authentication..."
-  # omarchy:heredoc-expands paths=none -- $face_module is the PAM module line
-  # taken from Howdy's package file list, never from the caller.
-  sudo tee "$lock_pam" >/dev/null <<EOF
-#%PAM-1.0
-auth       required                    $face_module
-account    include                     system-local-login
-EOF
+  install_default pam.d/omarchy-lock-face "$lock_pam"
 }
 
 remove_lock_face_pam() {
@@ -176,43 +177,8 @@ remove_lock_face_pam() {
 # key from every window and hands it to the polkit dialog.
 setup_face_key() {
   echo "Setting up the Copilot key for face scans..."
-  sudo tee "$key_socket" >/dev/null <<'EOF'
-[Unit]
-Description=Omarchy face key: hold face scans until the Copilot key is pressed
-
-[Socket]
-ListenStream=/run/omarchy-face-key.sock
-SocketMode=0600
-SocketUser=root
-SocketGroup=root
-
-[Install]
-WantedBy=sockets.target
-EOF
-  sudo tee "$key_service" >/dev/null <<'EOF'
-[Unit]
-Description=Omarchy face key: hold face scans until the Copilot key is pressed
-Requires=omarchy-face-key.socket
-
-[Service]
-ExecStart=/usr/bin/omarchy-face-key serve
-DevicePolicy=closed
-DeviceAllow=char-input r
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
-NoNewPrivileges=yes
-PrivateNetwork=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictAddressFamilies=AF_UNIX
-LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RestrictRealtime=yes
-SystemCallArchitectures=native
-EOF
+  install_default systemd/system/omarchy-face-key.socket "$key_socket"
+  install_default systemd/system/omarchy-face-key.service "$key_service"
   sudo systemctl daemon-reload
   sudo systemctl enable --now omarchy-face-key.socket
   omarchy-hyprland-toggle face-key on
@@ -226,13 +192,7 @@ EOF
 verify_face() {
   local status=0
 
-  # omarchy:heredoc-expands paths=none -- the module line is the fixed
-  # /usr/bin helper line built from Howdy's package file list, never from the
-  # caller.
-  sudo tee "$verify_pam" >/dev/null <<EOF
-#%PAM-1.0
-auth       required                    $face_module --wait
-EOF
+  install_default pam.d/omarchy-face-verify "$verify_pam"
   sudo pamtester "${verify_pam##*/}" "$USER" authenticate || status=$?
   sudo rm -f "$verify_pam"
   return "$status"
@@ -245,17 +205,7 @@ setup_face_conf() {
     return
   fi
   echo "Writing the lock screen's face limits to $face_conf..."
-  sudo mkdir -p "${face_conf%/*}"
-  sudo tee "$face_conf" >/dev/null <<'EOF'
-# Face authentication on the lock screen. Edit with sudo; the lock reads
-# changes right away. Past either limit only the password unlocks.
-
-# Face scans one lock allows.
-LOCK_ATTEMPTS=1
-
-# Minutes after locking during which the lock offers the face.
-LOCK_WINDOW_MINUTES=60
-EOF
+  install_default omarchy/face.conf "$face_conf"
 }
 
 

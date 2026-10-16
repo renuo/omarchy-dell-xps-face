@@ -39,6 +39,12 @@ jq -e --slurpfile ours "$ROOT/default/i18n/en/shell.json" '. as $all | $ours[0] 
   fail "each face menu entry sits right after its FIDO2 sibling, as the menu rows do" "$(cat "$checkout/default/i18n/en/menu.json")"
 pass "bin/apply-to-checkout merges the face strings into upstream's English catalogs"
 
+for file in systemd/system/omarchy-face-key.socket systemd/system/omarchy-face-key.service \
+  pam.d/omarchy-lock-face pam.d/omarchy-face-verify omarchy/face.conf; do
+  cmp -s "$ROOT/default/$file" "$checkout/default/$file" || fail "default/$file reaches the checkout, where the setup copies it from"
+done
+pass "bin/apply-to-checkout ships the files the setup copies into place"
+
 cp -r "$checkout/default/i18n" "$test_tmp/first"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies again"
 diff -r "$test_tmp/first" "$checkout/default/i18n" >/dev/null || fail "applying twice changes the catalogs no further"

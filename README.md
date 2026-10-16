@@ -55,7 +55,8 @@ The checkout's diff is the pull request; `I18N_STRUCTURAL=1 ./test/shell` there 
 
 ```
 bin/omarchy-*                      the commands: hardware check, setup and remove wizards, PAM helper, key service
-default/                           the menu rows, the Copilot key binding, the English strings
+default/                           the menu rows, the Copilot key binding, the English strings, and the
+                                   key service's units, PAM services and lock limits the setup copies
 etc/sudoers.d/                     the grant the lock screen's helper runs through
 install/                           the hardware leaf for the driver package and the first-run invitation
 shell/plugins/                     upstream's lock and polkit plugins with the face added

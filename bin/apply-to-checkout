@@ -34,6 +34,10 @@ install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install
 install -m 644 "$ROOT"/install/hardware/intel/ipu7-ir-camera.sh "$checkout/install/hardware/intel/"
 install -m 644 "$ROOT"/etc/sudoers.d/omarchy-face-match "$checkout/etc/sudoers.d/"
 install -m 644 "$ROOT"/default/hypr/toggles/face-key.lua "$checkout/default/hypr/toggles/"
+# Units, PAM services and the lock's limits the setup copies into place.
+install -D -m 644 "$ROOT"/default/systemd/system/omarchy-face-key.* -t "$checkout/default/systemd/system/"
+install -D -m 644 "$ROOT"/default/pam.d/omarchy-* -t "$checkout/default/pam.d/"
+install -m 644 "$ROOT"/default/omarchy/face.conf "$checkout/default/omarchy/"
 # The lock plugin files are upstream's with the face context added, so they
 # replace the checkout's copies outright; rebase them when upstream's move.
 install -m 644 "$ROOT"/shell/plugins/lock/Service.qml "$ROOT"/shell/plugins/lock/LockView.qml "$ROOT"/shell/plugins/lock/FaceModel.js "$checkout/shell/plugins/lock/"

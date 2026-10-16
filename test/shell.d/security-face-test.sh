@@ -136,9 +136,12 @@ case "${1:-}" in
     (( $# == 2 )) && in_scratch "$2" || reject "$@"
     exec /usr/bin/tee "$2"
     ;;
-  mkdir)
-    (( $# == 3 )) && [[ $2 == "-p" ]] && in_scratch "$3" || reject "$@"
-    exec /usr/bin/mkdir -p "$3"
+  install)
+    # Root-owned copies of the checkout's default files; the scratch tree
+    # cannot be chowned, so the owner flags are checked, not applied.
+    (( $# == 8 )) && [[ $2 == -Dm644 && "$3 $4 $5 $6" == "-o root -g root" ]] || reject "$@"
+    [[ $7 == "$TEST_DEFAULTS"/* ]] && in_scratch "$8" || reject "$@"
+    exec /usr/bin/install -Dm644 "$7" "$8"
     ;;
   rm)
     (( $# == 3 )) && [[ $2 == "-f" ]] && in_scratch "$3" || reject "$@"
@@ -192,7 +195,7 @@ invoke_setup() {
   fi
   TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
-    TEST_PKG_FAIL="${5:-0}" USER=alice \
+    TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" USER=alice \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -275,7 +278,7 @@ pass "setup stops when the installed Howdy has no configuration file"
 reset_fixture
 invoke_setup ready stable fail && fail "setup fails when enrollment fails"
 grep -q 'Enrollment failed' "$output" || fail "a failed enrollment is reported" "$(cat "$output")"
-! grep -q $'^sudo\ttee' "$log" || fail "a failed enrollment writes no PAM file" "$(cat "$log")"
+! grep -q $'^sudo\t\(tee\|install\)' "$log" || fail "a failed enrollment writes no PAM file" "$(cat "$log")"
 ! grep -q '^toggle' "$log" || fail "a failed enrollment keeps the Copilot key with the menu" "$(cat "$log")"
 [[ ! -e $pamd/omarchy-lock-face ]] || fail "a failed enrollment leaves no lock PAM file"
 grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
@@ -307,8 +310,8 @@ expected_lock=$(printf '%s\n' '#%PAM-1.0' "auth       required                  
   'account    include                     system-local-login')
 [[ $(<"$pamd/omarchy-lock-face") == "$expected_lock" ]] ||
   fail "the lock PAM service requires the face module" "$(cat "$pamd/omarchy-lock-face")"
-verify_tee=$(grep -n $'^sudo\ttee\t'"$pamd/omarchy-face-verify" "$log" | head -n1 | cut -d: -f1)
-[[ -n $verify_tee ]] || fail "verification writes its PAM service" "$(cat "$log")"
+verify_tee=$(grep -n $'^sudo\tinstall\t.*\t'"$pamd/omarchy-face-verify"'$' "$log" | head -n1 | cut -d: -f1)
+[[ -n $verify_tee ]] || fail "verification installs its PAM service" "$(cat "$log")"
 { grep -qx 'ListenStream=/run/omarchy-face-key.sock' "$units/omarchy-face-key.socket" &&
   grep -qx 'SocketMode=0600' "$units/omarchy-face-key.socket"; } || fail "the key service listens on root's private socket" "$(cat "$units/omarchy-face-key.socket")"
 { grep -qx 'ExecStart=/usr/bin/omarchy-face-key serve' "$units/omarchy-face-key.service" &&
@@ -325,7 +328,7 @@ grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
 ! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
 (( $(log_line_of 'gum choose') < $(log_line_of 'aur ') )) || fail "the scope is asked before the long AUR builds" "$(cat "$log")"
-verify_write=$(log_line_of $'sudo\ttee\t'"$pamd/omarchy-face-verify")
+verify_write=$verify_tee
 verify_drop=$(log_line_of $'sudo\trm\t-f\t'"$pamd/omarchy-face-verify")
 (( $(log_line_of $'sudo\thowdy\tadd') < verify_write )) || fail "enrollment precedes the verification service" "$(cat "$log")"
 (( verify_write < $(log_line_of $'sudo\tpamtester') )) || fail "the verification service precedes verification" "$(cat "$log")"
@@ -334,8 +337,20 @@ grep -q 'press the Copilot key' "$output" || fail "verification asks for the key
   fail "verification asks for the face alone: the helper waits for the key, and no password prompt appears" "$(cat "$test_tmp/verify-seen")"
 (( $(log_line_of $'sudo\tpamtester') < verify_drop )) || fail "the verification service goes once it has served" "$(cat "$log")"
 (( verify_drop < $(log_line_of $'sudo\tsed\t-i\t-e\t1i') )) || fail "verification precedes the sudo and polkit stacks" "$(cat "$log")"
-(( verify_drop < $(log_line_of $'sudo\ttee\t'"$pamd/omarchy-lock-face") )) || fail "verification precedes the lock service" "$(cat "$log")"
+(( verify_drop < $(log_line_of $'\t'"$pamd/omarchy-lock-face") )) || fail "verification precedes the lock service" "$(cat "$log")"
 [[ ! -e $pamd/omarchy-face-verify ]] || fail "no verification service is left behind"
+# Files the setup owns whole are the checkout's default/ files, copied, never
+# written from heredocs, so an Omarchy update ships changes to them.
+for pair in "systemd/system/omarchy-face-key.socket:$units/omarchy-face-key.socket" \
+  "systemd/system/omarchy-face-key.service:$units/omarchy-face-key.service" \
+  "pam.d/omarchy-lock-face:$pamd/omarchy-lock-face" "omarchy/face.conf:$omarchy_etc/face.conf"; do
+  cmp -s "$ROOT/default/${pair%%:*}" "${pair#*:}" || fail "${pair#*:} is a copy of default/${pair%%:*}"
+done
+cmp -s "$ROOT/default/pam.d/omarchy-face-verify" "$test_tmp/verify-seen" || fail "verification uses a copy of default/pam.d/omarchy-face-verify"
+grep -qx "auth       required                    $lock_module" "$ROOT/default/pam.d/omarchy-lock-face" ||
+  fail "the shipped lock service carries the module line the setup checks Howdy for" "$(cat "$ROOT/default/pam.d/omarchy-lock-face")"
+[[ $(grep -o 'sudo tee [^ ]*' "$setup") == "sudo tee /etc/pam.d/polkit-1" ]] ||
+  fail "the only file the setup writes itself is a polkit stack it creates" "$(grep -n 'sudo tee ' "$setup")"
 [[ $(grep -v -e '^#' -e '^$' "$omarchy_etc/face.conf") == $'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60' ]] ||
   fail "the face policy allows one scan within an hour of locking" "$(cat "$omarchy_etc/face.conf")"
 grep -q 'Perfect! Face authentication is now configured' "$output" || fail "success is reported" "$(cat "$output")"

@@ -211,6 +211,7 @@ step_linked() {
   fi
 
   for source in "$ROOT"/bin/omarchy-* "$ROOT/default/hypr/toggles/face-key.lua" "$ROOT/etc/sudoers.d/omarchy-face-match" \
+    "$ROOT"/default/systemd/system/omarchy-face-key.* "$ROOT"/default/pam.d/omarchy-* "$ROOT/default/omarchy/face.conf" \
     "$ROOT"/shell/plugins/lock/* "$ROOT"/shell/plugins/polkit/*; do
     relative=${source#"$ROOT"/}
     cmp -s "$source" "$OMARCHY_PATH/$relative" || stale+=("$OMARCHY_PATH/$relative")
