@@ -1,6 +1,6 @@
 # Working on this overlay
 
-This repository mirrors the layout of github.com/basecamp/omarchy so its files drop into a checkout unchanged (`bin/apply-to-checkout`). Upstream's `AGENTS.md` conventions apply here:
+This repository mirrors the layout of github.com/omacom/omarchy so its files drop into a checkout unchanged (`bin/apply-to-checkout`). Upstream's `AGENTS.md` conventions apply here:
 
 - `#!/bin/bash` shebangs, bash 5 conditionals (`[[ ]]`, `(( ))`), two-space indentation, full `if`/`else` for two-path flow.
 - Commands in `bin/` declare `# omarchy:summary=` (plus `args`, `examples`, `requires-sudo=true`, `hidden=true` only when true). The route comes from the filename: `omarchy-hw-dell-xps-ir-camera` is `omarchy hw dell xps ir camera`.

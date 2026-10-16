@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copy the overlay into an Omarchy checkout (github.com/basecamp/omarchy) so it
+# Copy the overlay into an Omarchy checkout (github.com/omacom/omarchy) so it
 # can be tested with `omarchy dev link` and sent upstream as one change.
 
 set -euo pipefail

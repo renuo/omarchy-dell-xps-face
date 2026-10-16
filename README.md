@@ -9,8 +9,8 @@ Until it is upstream, it runs on a checkout of Omarchy through Omarchy's own dev
 ```
 git clone https://github.com/renuo/omarchy-dell-xps-face && cd omarchy-dell-xps-face
 (cd packaging/hm1092-ir-camera && makepkg -si)      # the IR camera driver, until Omarchy's repository has it
-git clone https://github.com/basecamp/omarchy ~/Work/omarchy/omarchy-installer
-git clone https://github.com/omacom-io/omarchy-pkgs ~/Work/omarchy/omarchy-pkgs
+git clone https://github.com/omacom/omarchy ~/Work/omarchy/omarchy-installer
+git clone https://github.com/omacom/omarchy-pkgs ~/Work/omarchy/omarchy-pkgs
 bin/apply-to-checkout ~/Work/omarchy/omarchy-installer
 omarchy dev pkg-test                                # install the checkout as packages
 omarchy dev link ~/Work/omarchy/omarchy-installer   # run Omarchy from the checkout, then reboot
