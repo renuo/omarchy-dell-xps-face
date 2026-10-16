@@ -15,9 +15,9 @@ if command -v shellcheck >/dev/null; then
   shellcheck -x -e SC1090,SC1091 \
     "${bash_bins[@]}" "$ROOT"/install/user/first-run/*.hook "$ROOT"/test/shell.d/*-test.sh \
     "$ROOT"/packaging/*/hm1092-ir-led "$ROOT"/packaging/*/hm1092-ir-led-sleep || status=1
-  # Sourced fragments: install leaves have no shebang, PKGBUILD and .install are makepkg's.
+  # Sourced fragments: PKGBUILD and .install are makepkg's.
   shellcheck -s bash -e SC2034,SC2154,SC2164 \
-    "$ROOT"/install/hardware/*/*.sh "$ROOT"/packaging/*/PKGBUILD "$ROOT"/packaging/*/*.install || status=1
+    "$ROOT"/packaging/*/PKGBUILD "$ROOT"/packaging/*/*.install || status=1
 else
   echo "shellcheck is not installed; run bin/setup to add it" >&2
   status=1

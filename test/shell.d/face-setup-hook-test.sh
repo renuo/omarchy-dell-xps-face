@@ -18,13 +18,14 @@ mkdir -p "$stub_bin"
 # alone would not after a sudo and polkit setup.
 (( $(grep -Fc '/etc/omarchy/face.conf' "$hook") == 1 )) || fail "the hook names the setup's last file once"
 ! grep -q 'omarchy-lock-face' "$hook" || fail "the hook does not take the optional lock service for the setup's mark"
-(( $(grep -Fc '/dev/hm1092-ir' "$hook") == 1 )) || fail "the hook names the relay device once"
-sed -e "s|/etc/omarchy/face.conf|$test_tmp/face.conf|" -e "s|/dev/hm1092-ir|$test_tmp/hm1092-ir|" "$hook" >"$copy"
+# The setup installs the driver, so the camera alone earns the invitation.
+! grep -q 'hm1092' "$hook" || fail "the hook does not wait for the driver the setup installs"
+sed -e "s|/etc/omarchy/face.conf|$test_tmp/face.conf|" "$hook" >"$copy"
 pass "the hook reads the setup's mark, and the test drives a retargeted copy"
 
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
 #!/bin/bash
-[[ $# == 0 ]]
+[[ $# == 0 && $TEST_HW == 1 ]]
 SH
 cat >"$stub_bin/omarchy-done" <<'SH'
 #!/bin/bash
@@ -36,21 +37,17 @@ printf 'notify %s\n' "$*" >>"$TEST_LOG"
 SH
 chmod +x "$stub_bin"/*
 
-# invoke <relay device published: 1 or 0>
+# invoke <camera fitted: 1 or 0>
 invoke() {
   : >"$log"
-  rm -f "$test_tmp/hm1092-ir"
-  if [[ $1 == 1 ]]; then
-    : >"$test_tmp/hm1092-ir"
-  fi
-  TEST_LOG="$log" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" || fail "the hook never fails the first run"
+  TEST_LOG="$log" TEST_HW="$1" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" || fail "the hook never fails the first run"
 }
 
 invoke 1
-grep -q 'notify .*omarchy-setup-security-face' "$log" || fail "a camera whose relay device exists and no setup gets the invitation" "$(cat "$log")"
+grep -q 'notify .*omarchy-setup-security-face' "$log" || fail "a fitted camera without a setup gets the invitation, driver or not" "$(cat "$log")"
 invoke 0
-[[ ! -s $log ]] || fail "a camera without its relay device gets no invitation" "$(cat "$log")"
+[[ ! -s $log ]] || fail "a machine without the camera gets no invitation" "$(cat "$log")"
 : >"$test_tmp/face.conf"
 invoke 1
 [[ ! -s $log ]] || fail "a finished setup gets no invitation" "$(cat "$log")"
-pass "the hook invites to the setup only while a usable camera is not set up"
+pass "the hook invites to the setup only while a fitted camera is not set up"

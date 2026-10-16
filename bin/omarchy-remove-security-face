@@ -92,8 +92,8 @@ if omarchy-pkg-present howdy; then
 fi
 
 # pam-python is only on machines set up before the pam_exec helper; dropping it
-# takes its Python 2 along.
+# takes its Python 2 along. The setup installed the driver, so it goes too.
 echo "Removing face packages..."
-omarchy-pkg-drop howdy pam-python pamtester
+omarchy-pkg-drop howdy pam-python pamtester hm1092-ir-camera
 
 echo -e "\e[32mFace authentication and $face_user's local face models have been removed.\e[0m"

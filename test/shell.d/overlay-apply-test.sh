@@ -31,6 +31,12 @@ printf '%s\n' '{' '  "root": {' '    "label": "Go"' '  },' '  "setup.security.fi
 # An earlier version of the overlay shipped the lock's grant under etc/, where
 # every machine would get it.
 printf '%s\n' '%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-face-match ""' >"$checkout/etc/sudoers.d/omarchy-face-match"
+# It also installed the driver on every matching machine through a hardware
+# leaf, which the setup does now.
+# shellcheck disable=SC2016 # all.sh's own text
+printf '%s\n' 'run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-ir-camera.sh"' >>"$checkout/install/hardware/all.sh"
+: >"$checkout/install/hardware/intel/ipu7-ir-camera.sh"
+: >"$checkout/test/shell.d/ipu7-ir-camera-install-test.sh"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies to the checkout"
 shell_catalog="$checkout/default/i18n/en/shell.json"
 jq -S . "$shell_catalog" | cmp -s - "$shell_catalog" || fail "the shell catalog stays sorted, as upstream keeps it" "$(cat "$shell_catalog")"
@@ -48,6 +54,13 @@ for file in systemd/system/omarchy-face-key.socket systemd/system/omarchy-face-k
 done
 [[ ! -e $checkout/etc/sudoers.d/omarchy-face-match ]] || fail "the grant an earlier overlay put under etc/ is gone"
 pass "bin/apply-to-checkout ships the files the setup copies into place, and none under etc/"
+
+# shellcheck disable=SC2016 # all.sh's own text
+[[ $(<"$checkout/install/hardware/all.sh") == 'run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-camera.sh"' ]] ||
+  fail "all.sh loses the IR leaf an earlier overlay added and keeps upstream's lines" "$(cat "$checkout/install/hardware/all.sh")"
+[[ ! -e $checkout/install/hardware/intel/ipu7-ir-camera.sh && ! -e $checkout/test/shell.d/ipu7-ir-camera-install-test.sh ]] ||
+  fail "the IR leaf and its test an earlier overlay copied are gone"
+pass "bin/apply-to-checkout installs no driver leaf, and takes back the one an earlier overlay added"
 
 cp -r "$checkout/default/i18n" "$test_tmp/first"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies again"

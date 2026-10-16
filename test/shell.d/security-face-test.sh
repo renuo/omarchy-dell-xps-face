@@ -67,6 +67,13 @@ cat >"$stub_bin/omarchy-pkg-present" <<'SH'
 [[ $* == hm1092-ir-camera && $TEST_HW != nodriver ]]
 SH
 
+# The driver comes from Omarchy's repository, installed by the setup itself.
+cat >"$stub_bin/omarchy-pkg-add" <<'SH'
+#!/bin/bash
+printf 'pkg-add %s\n' "$*" >>"$TEST_LOG"
+[[ ${TEST_DRIVER_FAIL:-0} == 0 ]]
+SH
+
 # visudo parses unprivileged; the stub records what it was asked to parse.
 cat >"$stub_bin/visudo" <<'SH'
 #!/bin/bash
@@ -209,7 +216,8 @@ invoke_setup() {
   fi
   TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
-    TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" TEST_VISUDO="${TEST_VISUDO:-ok}" USER=alice \
+    TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" TEST_VISUDO="${TEST_VISUDO:-ok}" \
+    TEST_DRIVER_FAIL="${TEST_DRIVER_FAIL:-0}" USER=alice \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -236,30 +244,40 @@ expected_block() {
 reset_fixture
 invoke_setup absent stable && fail "setup fails without the camera"
 assert_no_mutation "no camera installs or configures nothing"
-! grep -q '^aur' "$log" || fail "no camera installs nothing" "$(cat "$log")"
+! grep -q '^aur\|^pkg-add' "$log" || fail "no camera installs nothing" "$(cat "$log")"
 pass "setup stops before installing anything when no camera is detected"
 
+# The driver is installed only here, on the machine whose owner asked for the
+# face, never by the installer on every matching machine.
 reset_fixture
-invoke_setup nodriver stable && fail "setup fails while the driver is missing"
-grep -q 'no usable driver' "$output" || fail "the missing driver is explained" "$(cat "$output")"
-grep -q 'hm1092-ir-camera' "$output" || fail "the driver package to install is named" "$(cat "$output")"
-assert_no_mutation "a missing driver configures nothing"
-! grep -q '^aur' "$log" || fail "a missing driver installs nothing" "$(cat "$log")"
-pass "setup explains the missing driver and stops before installing anything"
+invoke_setup nodriver stable && fail "setup stops after installing the driver, which needs a reboot"
+grep -qx 'pkg-add hm1092-ir-camera' "$log" || fail "setup installs the driver package" "$(cat "$log")"
+grep -qi 'reboot' "$output" || fail "the reboot the driver needs is asked for" "$(cat "$output")"
+grep -q 'omarchy setup security face' "$output" || fail "running the setup again is named" "$(cat "$output")"
+assert_no_mutation "a freshly installed driver configures nothing yet"
+! grep -q '^aur' "$log" || fail "a freshly installed driver builds no Howdy yet" "$(cat "$log")"
+pass "setup installs the driver package itself and asks for the reboot it needs"
 
+reset_fixture
+TEST_DRIVER_FAIL=1 invoke_setup nodriver stable && fail "setup fails when the driver does not install"
+assert_no_mutation "a failed driver install configures nothing"
+! grep -q '^aur' "$log" || fail "a failed driver install builds no Howdy" "$(cat "$log")"
+pass "setup stops when the driver package does not install"
+
+reset_fixture
 invoke_setup norelay stable && fail "setup fails while the relay publishes no device"
 grep -q 'relay publishes no device' "$output" || fail "the missing relay device is explained" "$(cat "$output")"
 grep -q 'hm1092-relay' "$output" || fail "the relay unit to check is named" "$(cat "$output")"
 assert_no_mutation "a missing relay device configures nothing"
-! grep -q '^aur' "$log" || fail "a missing relay device installs nothing" "$(cat "$log")"
+! grep -q '^aur\|^pkg-add' "$log" || fail "an installed driver is not installed again" "$(cat "$log")"
 pass "setup explains the missing relay device and stops before installing anything"
 
 reset_fixture
 rm "$face_key"
-invoke_setup ready stable && fail "setup fails without the key service"
+invoke_setup nodriver stable && fail "setup fails without the key service"
 grep -q 'omarchy-face-key is missing' "$output" || fail "the missing key service is explained" "$(cat "$output")"
 assert_no_mutation "a missing key service configures nothing"
-! grep -q '^aur' "$log" || fail "a missing key service installs nothing" "$(cat "$log")"
+! grep -q '^aur\|^pkg-add' "$log" || fail "a missing key service installs nothing, not even the driver" "$(cat "$log")"
 pass "setup stops before installing anything when Omarchy lacks the key service"
 
 reset_fixture
@@ -342,6 +360,7 @@ grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the relay's stable device path, not a /dev/video number" "$(cat "$seclib/howdy/config.ini")"
 ! grep -q '^hw .' "$log" || fail "the hardware predicate is asked without arguments" "$(cat "$log")"
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
+! grep -q '^pkg-add' "$log" || fail "an installed driver is not installed again" "$(cat "$log")"
 ! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
 (( $(log_line_of 'gum choose') < $(log_line_of 'aur ') )) || fail "the scope is asked before the long AUR builds" "$(cat "$log")"
 verify_write=$verify_tee

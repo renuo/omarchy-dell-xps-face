@@ -159,7 +159,7 @@ invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output
 [[ ! -e $omarchy_etc/face.conf ]] || fail "the lock screen's face policy is removed"
 (( $(log_line_of $'sudo\trm') < $(log_line_of $'sudo\thowdy') )) || fail "PAM is cleaned before the models" "$(cat "$log")"
 (( $(log_line_of $'sudo\thowdy') < $(log_line_of 'package ') )) || fail "models are cleared before the package drop" "$(cat "$log")"
-[[ $(tail -n 1 "$log") == 'package howdy pam-python pamtester' ]] || fail "the face packages drop last" "$(cat "$log")"
+[[ $(tail -n 1 "$log") == 'package howdy pam-python pamtester hm1092-ir-camera' ]] || fail "the face packages and the driver the setup installed drop last" "$(cat "$log")"
 grep -Fq "alice's local face models have been removed" "$output" || fail "success names the user" "$(cat "$output")"
 [[ ! -e $units/omarchy-face-key.socket && ! -e $units/omarchy-face-key.service ]] || fail "the key service's units are removed"
 (( $(log_line_of $'sudo\tsed') < $(log_line_of $'sudo\tsystemctl\tdisable\t--now\tomarchy-face-key.socket') )) ||

@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run install/hardware/intel install/hardware/all.sh default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
+for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -31,7 +31,6 @@ for test in "$ROOT"/test/shell.d/*-test.sh; do
   install -m 644 "$test" "$checkout/test/shell.d/"
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
-install -m 644 "$ROOT"/install/hardware/intel/ipu7-ir-camera.sh "$checkout/install/hardware/intel/"
 # The lock's grant is installed by the setup, only for the lock screen; an
 # earlier overlay shipped it under etc/, where every machine would get it.
 install -D -m 644 "$ROOT"/default/sudoers.d/omarchy-face-match -t "$checkout/default/sudoers.d/"
@@ -89,22 +88,16 @@ jq --slurpfile ours "$ROOT/default/i18n/en/menu.json" '
     end)' "$menu_catalog" >"$menu_catalog.tmp"
 mv "$menu_catalog.tmp" "$menu_catalog"
 
-# The IR leaf runs right after the RGB camera leaf it depends on, once.
+# The setup installs the driver now; an earlier overlay installed it on every
+# matching machine through a hardware leaf, so take that back out.
 all_sh="$checkout/install/hardware/all.sh"
 # shellcheck disable=SC2016 # literal text for all.sh
-rgb_line='run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-camera.sh"'
-# shellcheck disable=SC2016
 ir_line='run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-ir-camera.sh"'
-if ! grep -qF -- "$ir_line" "$all_sh"; then
-  grep -qF -- "$rgb_line" "$all_sh" || {
-    echo "$all_sh has no ipu7-camera.sh line to insert after" >&2
-    exit 1
-  }
-  RGB="$rgb_line" IR="$ir_line" awk '
-    { print }
-    $0 == ENVIRON["RGB"] { print ENVIRON["IR"] }' "$all_sh" >"$all_sh.tmp"
+if [[ -f $all_sh ]] && grep -qxF -- "$ir_line" "$all_sh"; then
+  IR="$ir_line" awk '$0 != ENVIRON["IR"]' "$all_sh" >"$all_sh.tmp"
   mv "$all_sh.tmp" "$all_sh"
 fi
+rm -f "$checkout/install/hardware/intel/ipu7-ir-camera.sh" "$checkout/test/shell.d/ipu7-ir-camera-install-test.sh"
 
 echo "Applied to $checkout. Run I18N_STRUCTURAL=1 ./test/shell there, then omarchy dev pkg-test and omarchy dev link $checkout."
 echo "The driver package itself lives in packaging/hm1092-ir-camera and is not part of the checkout."

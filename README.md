@@ -8,7 +8,7 @@ Until it is upstream, it runs on a checkout of Omarchy through Omarchy's own dev
 
 ```
 git clone https://github.com/renuo/omarchy-dell-xps-face && cd omarchy-dell-xps-face
-(cd packaging/hm1092-ir-camera && makepkg -si)      # the IR camera driver
+(cd packaging/hm1092-ir-camera && makepkg -si)      # the IR camera driver, until Omarchy's repository has it
 git clone https://github.com/basecamp/omarchy ~/Work/omarchy/omarchy-installer
 git clone https://github.com/omacom-io/omarchy-pkgs ~/Work/omarchy/omarchy-pkgs
 bin/apply-to-checkout ~/Work/omarchy/omarchy-installer
@@ -58,7 +58,7 @@ bin/omarchy-*                      the commands: hardware check, setup and remov
 default/                           the menu rows, the Copilot key binding, the English strings, and the
                                    key service's units, PAM services, lock limits and the lock screen's
                                    sudoers grant the setup copies
-install/                           the hardware leaf for the driver package and the first-run invitation
+install/                           the first-run invitation; the setup installs the driver package itself
 shell/plugins/                     upstream's lock and polkit plugins with the face added
 packaging/hm1092-ir-camera/        the driver: DKMS sensor module and bridge entry, grayscale relay
 test/shell.d/                      the suites; overlay-* stay here, the rest go upstream

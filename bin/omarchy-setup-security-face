@@ -239,20 +239,24 @@ if ! omarchy-hw-dell-xps-ir-camera; then
   exit 1
 fi
 
+if [[ ! -x $face_key ]]; then
+  echo -e "\e[31m$face_key is missing; update Omarchy and run this setup again.\e[0m"
+  exit 1
+fi
+
+# The driver is installed here, for the machine whose owner asked for the
+# face, rather than by the installer on every matching XPS. ipu-bridge builds
+# the camera graph at boot, so the relay device appears only after a reboot.
 if ! omarchy-pkg-present hm1092-ir-camera; then
-  echo -e "\e[31mThe IR camera has no usable driver yet.\e[0m"
-  echo "Install the hm1092-ir-camera package (omarchy pkg add hm1092-ir-camera), reboot, then run this setup again."
+  echo "Installing the IR camera driver (hm1092-ir-camera)..."
+  omarchy-pkg-add hm1092-ir-camera
+  echo -e "\e[32m\nThe IR camera driver is installed. Reboot, then run omarchy setup security face again to enroll.\e[0m"
   exit 1
 fi
 
 if [[ ! -e $face_device ]]; then
   echo -e "\e[31mThe IR camera driver is installed, but its grayscale relay publishes no device.\e[0m"
   echo "Check 'systemctl status hm1092-relay' and run this setup again once $face_device exists."
-  exit 1
-fi
-
-if [[ ! -x $face_key ]]; then
-  echo -e "\e[31m$face_key is missing; update Omarchy and run this setup again.\e[0m"
   exit 1
 fi
 
