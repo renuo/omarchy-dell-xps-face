@@ -18,12 +18,13 @@ mkdir -p "$stub_bin"
 # alone would not after a sudo and polkit setup.
 (( $(grep -Fc '/etc/omarchy/face.conf' "$hook") == 1 )) || fail "the hook names the setup's last file once"
 ! grep -q 'omarchy-lock-face' "$hook" || fail "the hook does not take the optional lock service for the setup's mark"
-sed "s|/etc/omarchy/face.conf|$test_tmp/face.conf|" "$hook" >"$copy"
+(( $(grep -Fc '/dev/hm1092-ir' "$hook") == 1 )) || fail "the hook names the relay device once"
+sed -e "s|/etc/omarchy/face.conf|$test_tmp/face.conf|" -e "s|/dev/hm1092-ir|$test_tmp/hm1092-ir|" "$hook" >"$copy"
 pass "the hook reads the setup's mark, and the test drives a retargeted copy"
 
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
 #!/bin/bash
-[[ $* == "--driver" && $TEST_DRIVER == 1 ]]
+[[ $# == 0 ]]
 SH
 cat >"$stub_bin/omarchy-done" <<'SH'
 #!/bin/bash
@@ -35,16 +36,20 @@ printf 'notify %s\n' "$*" >>"$TEST_LOG"
 SH
 chmod +x "$stub_bin"/*
 
-# invoke <driver>
+# invoke <relay device published: 1 or 0>
 invoke() {
   : >"$log"
-  TEST_LOG="$log" TEST_DRIVER="$1" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" || fail "the hook never fails the first run"
+  rm -f "$test_tmp/hm1092-ir"
+  if [[ $1 == 1 ]]; then
+    : >"$test_tmp/hm1092-ir"
+  fi
+  TEST_LOG="$log" PATH="$stub_bin:/usr/bin:/bin" bash "$copy" || fail "the hook never fails the first run"
 }
 
 invoke 1
-grep -q 'notify .*omarchy-setup-security-face' "$log" || fail "a camera with a driver and no setup gets the invitation" "$(cat "$log")"
+grep -q 'notify .*omarchy-setup-security-face' "$log" || fail "a camera whose relay device exists and no setup gets the invitation" "$(cat "$log")"
 invoke 0
-[[ ! -s $log ]] || fail "a camera without a driver gets no invitation" "$(cat "$log")"
+[[ ! -s $log ]] || fail "a camera without its relay device gets no invitation" "$(cat "$log")"
 : >"$test_tmp/face.conf"
 invoke 1
 [[ ! -s $log ]] || fail "a finished setup gets no invitation" "$(cat "$log")"

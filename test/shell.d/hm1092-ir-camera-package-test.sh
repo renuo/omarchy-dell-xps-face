@@ -79,13 +79,15 @@ bash "$pkg/hm1092-ir-led" blink 2>/dev/null || status=$?
 (( status == 2 )) || fail "hm1092-ir-led rejects an unknown verb with usage" "exit $status"
 pass "hm1092-ir-led drives the flood LED and never fails on off"
 
-# One device name is spelled in four places; they must agree.
+# One device name is spelled in three places; they must agree. The udev rule
+# turns it into the stable path the face setup points Howdy at.
 label=$(sed -n 's/^CARD_LABEL="\(.*\)"$/\1/p' "$pkg/hm1092-ir-camera.conf")
 [[ -n $label ]] || fail "the conf names the device"
 grep -qF "ATTR{name}==\"$label\"" "$pkg/72-hm1092-ir-camera.rules" || fail "the udev symlink rule uses the conf's device name"
 (( $(grep -cF "\"$label\"" "$pkg/hide-hm1092-ir-camera.conf") == 2 )) || fail "the WirePlumber rule hides the conf's device name"
-grep -qi 'hm1092' <<<"$label" || fail "the device name contains hm1092, which omarchy-hw-dell-xps-ir-camera --device looks for"
-pass "the device name agrees across the conf, udev and WirePlumber"
+grep -qF 'SYMLINK+="hm1092-ir"' "$pkg/72-hm1092-ir-camera.rules" || fail "the udev rule publishes /dev/hm1092-ir"
+grep -qx 'face_device=/dev/hm1092-ir' "$ROOT/bin/omarchy-setup-security-face" || fail "the face setup reads the path the udev rule publishes"
+pass "the device name agrees across the conf, udev and WirePlumber, and its stable path with the face setup"
 
 # Only root reads the relay device: Howdy always runs as root, and a session
 # process that could open it could watch the IR camera or, while the relay

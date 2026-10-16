@@ -41,8 +41,8 @@ chmod +x "$test_tmp/bin"/*
 cli="$test_tmp/bin/omarchy"
 
 registry=$("$cli" commands --all --json)
-jq -e '.commands[] | select(.binary == "omarchy-hw-dell-xps-ir-camera" and .route == "omarchy hw dell xps ir camera" and .requires_sudo == false)' <<<"$registry" >/dev/null ||
-  fail "the hardware predicate routes as omarchy hw dell xps ir camera" "$registry"
+jq -e '.commands[] | select(.binary == "omarchy-hw-dell-xps-ir-camera" and .route == "omarchy hw dell xps ir camera" and .requires_sudo == false and .hidden == true)' <<<"$registry" >/dev/null ||
+  fail "the hardware predicate routes as omarchy hw dell xps ir camera and stays hidden like omarchy-hw-fingerprint" "$registry"
 jq -e '.commands[] | select(.binary == "omarchy-setup-security-face" and .route == "omarchy setup security face" and .requires_sudo == true)' <<<"$registry" >/dev/null ||
   fail "the setup wizard routes as omarchy setup security face and asks for sudo" "$registry"
 jq -e '.commands[] | select(.binary == "omarchy-remove-security-face" and .route == "omarchy remove security face" and .requires_sudo == true)' <<<"$registry" >/dev/null ||
@@ -59,5 +59,5 @@ done
 pass "--help renders usage for each route without executing it"
 
 help=$("$cli" hw dell xps ir camera --help 2>&1)
-grep -q -- '--device' <<<"$help" || fail "the hardware predicate documents its flags" "$help"
-pass "the hardware predicate documents its flags"
+! grep -q -- '--' <<<"$help" || fail "the hardware predicate takes no flags" "$help"
+pass "the hardware predicate takes no flags"

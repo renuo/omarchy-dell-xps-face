@@ -10,6 +10,9 @@ lock_pam=/etc/pam.d/omarchy-lock-face
 verify_pam=/etc/pam.d/omarchy-face-verify
 face_conf=/etc/omarchy/face.conf
 face_key=/usr/bin/omarchy-face-key
+# The driver package's udev rule names the relay device here whatever video
+# number it got at boot, and keeps it root's alone.
+face_device=/dev/hm1092-ir
 key_socket=/etc/systemd/system/omarchy-face-key.socket
 key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
@@ -264,20 +267,15 @@ if ! omarchy-hw-dell-xps-ir-camera; then
   exit 1
 fi
 
-if ! omarchy-hw-dell-xps-ir-camera --driver; then
+if ! omarchy-pkg-present hm1092-ir-camera; then
   echo -e "\e[31mThe IR camera has no usable driver yet.\e[0m"
   echo "Install the hm1092-ir-camera package (omarchy pkg add hm1092-ir-camera), reboot, then run this setup again."
   exit 1
 fi
 
-if ! face_device=$(omarchy-hw-dell-xps-ir-camera --device); then
-  echo -e "\e[31mThe IR camera driver is loaded, but its grayscale relay publishes no device.\e[0m"
-  echo "Check 'systemctl status hm1092-relay' and run this setup again once the HM1092 IR Camera device exists."
-  exit 1
-fi
-
-if [[ $face_device != /dev/video[0-9]* ]]; then
-  echo -e "\e[31mUnexpected IR camera device: $face_device\e[0m"
+if [[ ! -e $face_device ]]; then
+  echo -e "\e[31mThe IR camera driver is installed, but its grayscale relay publishes no device.\e[0m"
+  echo "Check 'systemctl status hm1092-relay' and run this setup again once $face_device exists."
   exit 1
 fi
 

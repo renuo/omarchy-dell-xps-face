@@ -19,19 +19,23 @@ pamd="$test_tmp/pam.d"
 face_conf="$test_tmp/face.conf"
 omarchy="$test_tmp/omarchy"
 home="$test_tmp/home"
+i2c="$test_tmp/i2c"
+ir_device="$test_tmp/hm1092-ir"
 plugins="$home/.config/omarchy/plugins"
 mkdir -p "$stub_bin"
 
 # The walk-through reads the packaged helpers, the PAM stacks and the lock's
-# policy at fixed paths and probes with the checkout's hardware check; a scratch
-# copy retargets each.
+# policy at fixed paths and probes the camera with the checkout's hardware
+# check, the sensor's I2C client and the relay device; a scratch copy retargets
+# each.
 # shellcheck disable=SC2016 # the literals are what bin/run's source says
 for literal in 'bin_dir=/usr/bin' 'pam_dir=/etc/pam.d' 'face_conf=/etc/omarchy/face.conf' \
-  'hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"'; do
+  'hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"' 'i2c_devices=/sys/bus/i2c/devices' 'ir_device=/dev/hm1092-ir'; do
   (( $(grep -Fxc "$literal" "$script") == 1 )) || fail "bin/run names $literal exactly once"
 done
 sed -e "s|^ROOT=.*|ROOT=\"$ROOT\"|" -e "s|^bin_dir=/usr/bin$|bin_dir=$usr_bin|" -e "s|^pam_dir=/etc/pam.d$|pam_dir=$pamd|" \
-  -e "s|^face_conf=/etc/omarchy/face.conf$|face_conf=$face_conf|" -e "s|^hw_check=.*|hw_check=$stub_bin/hw|" "$script" >"$copy"
+  -e "s|^face_conf=/etc/omarchy/face.conf$|face_conf=$face_conf|" -e "s|^hw_check=.*|hw_check=$stub_bin/hw|" \
+  -e "s|^i2c_devices=/sys/bus/i2c/devices$|i2c_devices=$i2c|" -e "s|^ir_device=/dev/hm1092-ir$|ir_device=$ir_device|" "$script" >"$copy"
 pass "bin/run names its fixed paths once each, and the test drives a retargeted copy"
 
 # gum answers from a queue, one line per question; an empty queue is Ctrl+C.
@@ -200,6 +204,32 @@ rm "$pamd/omarchy-lock-face" "$pamd/sudo" "$pamd/polkit-1"
 invoke Passed -- setup || fail "the setup step passes" "$(cat "$output")"
 grep -q '^omarchy-setup-security-face' "$log" || fail "an unconfigured machine runs the setup" "$(cat "$log")"
 pass "the setup step runs the wizard, and asks before enrolling a second time"
+
+# reset_camera <driver bound: 1 or 0> <relay device: 1 or 0>
+reset_camera() {
+  rm -rf "$i2c" "$ir_device" "$test_tmp/drivers"
+  mkdir -p "$i2c/i2c-HIMX1092:00" "$test_tmp/drivers/hm1092"
+  if [[ $1 == 1 ]]; then
+    ln -s "$test_tmp/drivers/hm1092" "$i2c/i2c-HIMX1092:00/driver"
+  fi
+  if [[ $2 == 1 ]]; then
+    : >"$ir_device"
+  fi
+}
+
+reset_fixture
+reset_camera 1 1
+invoke -- probe || fail "a fitted camera with its driver and relay device passes the probe" "$(cat "$output")"
+grep -qx 'hw ' "$log" || fail "the probe asks the hardware predicate without arguments" "$(cat "$log")"
+grep -q 'driver: hm1092 on i2c-HIMX1092:00' "$output" || fail "the probe names the bound driver" "$(cat "$output")"
+grep -qF "device: $ir_device" "$output" || fail "the probe names the relay device" "$(cat "$output")"
+reset_camera 0 1
+invoke -- probe && fail "a sensor without a driver fails the probe"
+grep -q 'hm1092-ir-camera' "$output" || fail "the missing driver names the package" "$(cat "$output")"
+reset_camera 1 0
+invoke -- probe && fail "a driver without the relay device fails the probe"
+grep -q 'hm1092-relay' "$output" || fail "the missing relay device names its unit" "$(cat "$output")"
+pass "bin/run probe narrates the camera, its driver and the relay device the setup needs"
 
 reset_fixture
 TEST_HW=1 invoke && fail "a machine without a ready camera fails"

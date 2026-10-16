@@ -11,8 +11,6 @@ trap 'rm -rf "$test_tmp"' EXIT
 stub_bin="$test_tmp/bin"
 acpi="$test_tmp/acpi"
 leds="$test_tmp/leds"
-i2c="$test_tmp/i2c"
-v4l="$test_tmp/video4linux"
 mkdir -p "$stub_bin"
 
 # The DMI match is its own command; stand in for it so the suite does not
@@ -24,8 +22,8 @@ SH
 chmod +x "$stub_bin/omarchy-hw-match"
 
 reset_sysfs() {
-  rm -rf "$acpi" "$leds" "$i2c" "$v4l" "$test_tmp/drivers"
-  mkdir -p "$acpi" "$leds" "$i2c" "$v4l"
+  rm -rf "$acpi" "$leds"
+  mkdir -p "$acpi" "$leds"
 }
 
 acpi_device() {
@@ -38,28 +36,10 @@ led() {
   printf '0\n' >"$leds/$1/brightness"
 }
 
-# sysfs links a bound client at its driver directory, and the detector's
-# [[ -e ]] follows the link, so the target has to exist to model a binding.
-i2c_client() {
-  mkdir -p "$i2c/$1"
-  rm -f "$i2c/$1/driver"
-  if [[ -n ${2:-} ]]; then
-    mkdir -p "$test_tmp/drivers/$2"
-    ln -sfn "$test_tmp/drivers/$2" "$i2c/$1/driver"
-  fi
-}
-
-video_node() {
-  mkdir -p "$v4l/$1"
-  printf '%s\n' "$2" >"$v4l/$1/name"
-}
-
 run_hw() {
   OMARCHY_TEST_DMI="${dmi:-XPS 14 DA14260}" \
     OMARCHY_ACPI_DEVICES_PATH="$acpi" \
     OMARCHY_LEDS_PATH="$leds" \
-    OMARCHY_I2C_DEVICES_PATH="$i2c" \
-    OMARCHY_VIDEO4LINUX_PATH="$v4l" \
     PATH="$stub_bin:$PATH" \
     "$hw" "$@"
 }
@@ -106,37 +86,16 @@ reset_sysfs
 led "HIMX1092_00::ir_flood_led"
 assert_rejects "a flood LED without the sensor is not detected"
 
+# Like every hw- command, a predicate and nothing else: the face setup checks
+# the driver and the relay device itself, at the paths the driver package owns.
+metadata=$(grep '^# omarchy:' "$hw")
+grep -qx '# omarchy:hidden=true' <<<"$metadata" || fail "the predicate is hidden like omarchy-hw-fingerprint" "$metadata"
+! grep -qE '^# omarchy:(args|examples)=' <<<"$metadata" || fail "the predicate takes no arguments" "$metadata"
+pass "the predicate is a hidden, argument-free hw- command"
+
 reset_sysfs
 acpi_device HIMX1092:00 15
 led "HIMX1092_00::ir_flood_led"
-i2c_client i2c-HIMX1092:00
-assert_rejects "--driver rejects a sensor with no driver bound" --driver
-assert_detects "the bare match holds while the driver is missing"
-
-i2c_client i2c-HIMX1092:00 hm1092
-assert_detects "--driver accepts a sensor with a driver bound" --driver
-
-assert_rejects "--device rejects a bound sensor with no named V4L2 device" --device
-video_node video0 "Intel IPU7 ISYS Capture 0"
-assert_rejects "--device ignores the raw ISYS capture nodes" --device
-video_node video51 "HM1092 IR Camera"
-device=$(run_hw --device) || fail "--device succeeds once a named node exists"
-[[ $device == "/dev/video51" ]] || fail "--device prints the matching node" "got: $device"
-pass "--device prints the V4L2 device named after the sensor"
-
-i2c_client i2c-HIMX1092:00
-assert_rejects "--device requires the driver, not only a named node" --device
-
-i2c_client i2c-HIMX1092:00 hm1092
-verbose=$(run_hw --verbose --device 2>&1 >/dev/null)
-for probe in sensor led driver device; do
-  grep -q "^$probe: " <<<"$verbose" || fail "--verbose reports the $probe probe" "$verbose"
-done
-[[ $(run_hw --verbose --device 2>/dev/null) == "/dev/video51" ]] ||
-  fail "--verbose keeps stdout for the device path"
-pass "--verbose describes each probe on stderr"
-
-status=0
-run_hw --bogus 2>/dev/null || status=$?
-(( status == 2 )) || fail "an unknown flag exits with usage status 2" "got: $status"
-pass "an unknown flag is rejected with usage"
+assert_detects "the match holds before any camera driver is installed"
+[[ -z $(run_hw 2>&1) ]] || fail "the predicate prints nothing" "$(run_hw 2>&1)"
+pass "the predicate answers silently"

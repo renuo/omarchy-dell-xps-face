@@ -17,6 +17,7 @@ etc_howdy="$test_tmp/howdy-etc"
 omarchy_etc="$test_tmp/omarchy-etc"
 units="$test_tmp/units"
 face_key="$test_tmp/omarchy-face-key"
+ir_device="$test_tmp/hm1092-ir"
 log="$test_tmp/calls.log"
 output="$test_tmp/output"
 copy="$test_tmp/setup.sh"
@@ -36,11 +37,13 @@ legacy_module="pam_python.so $seclib/howdy/pam.py"
 # shipped command.
 for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face' \
   'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' 'face_key=/usr/bin/omarchy-face-key' \
-  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service'; do
+  'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service' \
+  'face_device=/dev/hm1092-ir'; do
   (( $(grep -Fxc "$literal" "$setup") == 1 )) || fail "setup names $literal exactly once"
 done
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
   -e "s|^face_key=/usr/bin/omarchy-face-key$|face_key=$face_key|" \
+  -e "s|^face_device=/dev/hm1092-ir$|face_device=$ir_device|" \
   -e "s|/etc/pam.d/|$pamd/|g" \
   -e "s|/etc/howdy/|$etc_howdy/|g" \
   -e "s|/etc/systemd/system/|$units/|g" \
@@ -48,18 +51,18 @@ sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
 ! grep -q '/etc/pam.d/\|/etc/howdy/\|/etc/omarchy/\|/etc/systemd/' "$copy" || fail "the scratch copy keeps no fixed /etc path"
 pass "setup names its fixed paths once each, and the test drives a retargeted copy"
 
+# The predicate takes no arguments; the driver is the package, and the device
+# Howdy reads is the relay's stable /dev/hm1092-ir.
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
 #!/bin/bash
 printf 'hw %s\n' "$*" >>"$TEST_LOG"
-case "$TEST_HW:${1:-}" in
-  nodriver:) exit 0 ;;
-  norelay:) exit 0 ;;
-  norelay:--driver) exit 0 ;;
-  ready:) exit 0 ;;
-  ready:--driver) exit 0 ;;
-  ready:--device) echo "$TEST_DEVICE" ;;
-  *) exit 1 ;;
-esac
+(( $# == 0 )) || exit 2
+[[ $TEST_HW != absent ]]
+SH
+
+cat >"$stub_bin/omarchy-pkg-present" <<'SH'
+#!/bin/bash
+[[ $* == hm1092-ir-camera && $TEST_HW != nodriver ]]
 SH
 
 cat >"$stub_bin/omarchy-pkg-aur-add" <<'SH'
@@ -175,16 +178,21 @@ reset_fixture() {
   printf '#%%PAM-1.0\nauth\t\tinclude\t\tsystem-auth\naccount\t\tinclude\t\tsystem-auth\nsession\t\tinclude\t\tsystem-auth\n' >"$pamd/sudo"
   printf '[video]\ndevice_path = none\n' >"$seclib/howdy/config.ini"
   printf '[video]\ndevice_path = none\n' >"$etc_howdy/config.ini"
+  rm -f "$ir_device"
 }
 
-# [TEST_CHOICE=<n>] invoke_setup <hw> <layout> [enroll] [verify] [pkg-fail] [device]
+# [TEST_CHOICE=<n>] invoke_setup <hw> <layout> [enroll] [verify] [pkg-fail]
+# <hw>: absent, nodriver (no package), norelay (no relay device) or ready.
 # TEST_CHOICE picks the scope: 1 everything, 2 sudo and polkit, 3 the lock screen.
 invoke_setup() {
   local status=0
 
+  if [[ $1 == ready ]]; then
+    : >"$ir_device"
+  fi
   TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
-    TEST_PKG_FAIL="${5:-0}" TEST_DEVICE="${6:-/dev/video51}" USER=alice \
+    TEST_PKG_FAIL="${5:-0}" USER=alice \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -229,12 +237,6 @@ assert_no_mutation "a missing relay device configures nothing"
 pass "setup explains the missing relay device and stops before installing anything"
 
 reset_fixture
-invoke_setup ready stable ok ok 0 "bogus device" && fail "setup rejects a malformed device path"
-! grep -q '^aur' "$log" || fail "a malformed device path installs nothing" "$(cat "$log")"
-assert_no_mutation "a malformed device path configures nothing"
-pass "setup rejects a device path that is not a /dev/video node"
-
-reset_fixture
 rm "$face_key"
 invoke_setup ready stable && fail "setup fails without the key service"
 grep -q 'omarchy-face-key is missing' "$output" || fail "the missing key service is explained" "$(cat "$output")"
@@ -276,7 +278,7 @@ grep -q 'Enrollment failed' "$output" || fail "a failed enrollment is reported" 
 ! grep -q $'^sudo\ttee' "$log" || fail "a failed enrollment writes no PAM file" "$(cat "$log")"
 ! grep -q '^toggle' "$log" || fail "a failed enrollment keeps the Copilot key with the menu" "$(cat "$log")"
 [[ ! -e $pamd/omarchy-lock-face ]] || fail "a failed enrollment leaves no lock PAM file"
-grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
+grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
   fail "Howdy is pointed at the IR device before enrollment" "$(cat "$seclib/howdy/config.ini")"
 pass "a failed enrollment stops before any PAM stack is touched"
 
@@ -317,8 +319,9 @@ verify_tee=$(grep -n $'^sudo\ttee\t'"$pamd/omarchy-face-verify" "$log" | head -n
 grep -qx 'toggle face-key on' "$log" || fail "Hyprland takes the Copilot key from the Omarchy menu" "$(cat "$log")"
 (( $(log_line_of 'toggle face-key on') < verify_tee )) || fail "the key works before verification asks for it" "$(cat "$log")"
 ! grep -q 'expose_authtok' "$pamd/omarchy-lock-face" || fail "the lock service never asks: the lock screen cannot answer" "$(cat "$pamd/omarchy-lock-face")"
-grep -qxF "device_path = /dev/video51" "$seclib/howdy/config.ini" ||
-  fail "Howdy's stable config points at the IR device" "$(cat "$seclib/howdy/config.ini")"
+grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
+  fail "Howdy's stable config points at the relay's stable device path, not a /dev/video number" "$(cat "$seclib/howdy/config.ini")"
+! grep -q '^hw .' "$log" || fail "the hardware predicate is asked without arguments" "$(cat "$log")"
 grep -qx 'aur howdy pamtester' "$log" || fail "Howdy and pamtester come from the AUR" "$(cat "$log")"
 ! grep -q 'aur pam-python' "$log" || fail "the stable layout no longer pulls in pam-python" "$(cat "$log")"
 (( $(log_line_of 'gum choose') < $(log_line_of 'aur ') )) || fail "the scope is asked before the long AUR builds" "$(cat "$log")"
@@ -408,6 +411,6 @@ reset_fixture
 invoke_setup ready both || fail "setup succeeds with a Howdy that ships compare.py beside a native module" "$(cat "$output"; cat "$log")"
 [[ $(sed -n 1,3p "$pamd/sudo") == "$(expected_block)" ]] || fail "compare.py serves through the helper, not the native module" "$(cat "$pamd/sudo")"
 ! grep -q 'pam_howdy' "$pamd/sudo" || fail "the native module is never configured" "$(cat "$pamd/sudo")"
-grep -qxF "device_path = /dev/video51" "$etc_howdy/config.ini" ||
+grep -qxF "device_path = $ir_device" "$etc_howdy/config.ini" ||
   fail "the config the package ships under /etc points at the IR device" "$(cat "$etc_howdy/config.ini")"
 pass "setup uses compare.py and the configuration the installed Howdy ships"

@@ -13,6 +13,8 @@ bin_dir=/usr/bin
 pam_dir=/etc/pam.d
 face_conf=/etc/omarchy/face.conf
 hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"
+i2c_devices=/sys/bus/i2c/devices
+ir_device=/dev/hm1092-ir
 plugins_dir="$HOME/.config/omarchy/plugins"
 me=${USER:-$(id -un)}
 
@@ -170,12 +172,34 @@ restore_policy() {
   restore_window=""
 }
 
+# The shipped predicate only answers yes or no; this narrates what the setup
+# needs beyond it, so a failed trial names the layer that is missing.
 step_probe() {
-  if "$hw_check" --verbose --device; then
-    result passed
-  else
-    result failed "omarchy setup security face would stop here (see docs/face-authentication.md)"
+  local client driver=""
+
+  if ! "$hw_check"; then
+    result failed "no Dell XPS with the HM1092 and its flood LED (see docs/face-authentication.md)"
+    return
   fi
+  say "camera: the HM1092 and its IR flood LED are fitted"
+  # ACPI creates the sensor's I2C client either way; only a loaded sensor
+  # driver binds it.
+  for client in "$i2c_devices"/i2c-HIMX1092:*; do
+    if [[ -e $client/driver ]]; then
+      driver="$(basename "$(readlink -f -- "$client/driver")") on ${client##*/}"
+    fi
+  done
+  if [[ -z $driver ]]; then
+    result failed "no driver bound to the sensor: install hm1092-ir-camera and reboot"
+    return
+  fi
+  say "driver: $driver"
+  if [[ ! -e $ir_device ]]; then
+    result failed "no $ir_device: check systemctl status hm1092-relay"
+    return
+  fi
+  say "device: $ir_device -> $(readlink -f -- "$ir_device")"
+  result passed
 }
 
 step_linked() {
