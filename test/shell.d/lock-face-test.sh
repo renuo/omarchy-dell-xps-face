@@ -19,6 +19,10 @@ const helper = fs.readFileSync(path.join(root, 'bin/omarchy-face-match'), 'utf8'
 const key = fs.readFileSync(path.join(root, 'bin/omarchy-face-key'), 'utf8')
 assert(helper.includes(`echo "${model.SCAN_MESSAGE}"`), 'the helper announces a scan with the line the lock waits for')
 assert(key.includes(`REFUSED_MESSAGE = "${model.REFUSED_MESSAGE}"`), 'the key service refuses with the line the lock recognises')
+// Howdy tells a face it does not know only by running out of time, and
+// pam_exec turns that, like any refusal, into a system error.
+assert(/\n  11\)\n    echo "([^"]*)"\n/.exec(helper)[1] === model.NO_MATCH_MESSAGE, "the helper reports Howdy's timeout with the line the lock takes for a stranger")
+assertEqual(model.NO_MATCH_HOLD_MS, 10000, '"Who are you?" stands for ten seconds')
 
 const hour = 60 * 60 * 1000
 assertDeepEqual(model.parsePolicy(''), { attempts: 1, windowMs: hour }, 'without a policy file a lock allows one scan within an hour of locking')
@@ -57,6 +61,10 @@ for (const [state, text] of Object.entries(placeholders)) {
   assert(text.length <= 23, `"${text}" fits the field beside the fingerprint hint`)
 }
 assertEqual(model.placeholderText('', (key) => key), 'lock.enterPassword', 'without a face the field keeps upstream\'s own prompt')
+assertEqual(catalog['lock.faceNoMatch'], 'Who are you?', 'a face the lock does not know is asked who it is')
+assertEqual(model.noMatchFollowUp('offered', t), '', 'with a scan left the field falls back to "Face or Password"')
+assertEqual(model.noMatchFollowUp('exhausted', (key) => key), 'lock.enterPassword', 'with the scans spent the field asks for the password in upstream\'s words')
+assertEqual(model.noMatchFollowUp('expired', (key) => key), 'lock.enterPassword', 'with the window closed the field asks for the password in upstream\'s words')
 JS
 
 # function_has <name> <literal>: the QML function's body contains the literal.
@@ -93,7 +101,7 @@ awk '/function runBlank\(\) \{/{f=1} f && /if \(faceAuthenticating\) \{/{found=1
 { grep -q 'interval: FaceModel.ATTEMPT_TIMEOUT_MS' "$service" && function_has noteFaceMessage 'faceAbortTimer.restart()'; } ||
   fail "a scan is bounded by the model's timeout from its start"
 function_has handleFaceFinished 'if (!scanned) {' || fail "a check that ends without a scan is no attempt"
-{ function_has handleFaceFinished 'failureMessage = I18n.t("lock.faceNoMatch")' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
+{ function_has handleFaceFinished 'rejectFace()' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
   fail "a miss is reported in the field and the check waits again after a pause"
 grep -q 'interval: FaceModel.REARM_DELAY_MS' "$service" || fail "the pause comes from the model"
 grep -Pzo 'interval: 30000\s*repeat: true\s*running: root\.lockRequested && root\.faceConfigured\s*onTriggered: root\.syncFace\(\)' "$service" >/dev/null ||
@@ -102,6 +110,28 @@ grep -Pzo 'interval: 30000\s*repeat: true\s*running: root\.lockRequested && root
 grep -qF 'Commons.I18n.t("lock.scanningFace")' "$view" || fail "a running scan is shown in the field"
 { grep -q 'id: faceIcon' "$view" && grep -q 'Math.max(root.fingerprintReserve, root.faceReserve)' "$view"; } || fail "the view shows a face hint and keeps the dots clear of it"
 pass "the lock keeps a face check waiting for the Copilot key while it offers the face and never scans on its own"
+
+# A stranger's face reaches the lock as pam_exec's system error after the
+# helper's timeout line; the lock asks who it is, holds that, then says what
+# is left. Typing, a new scan or a new lock replaces the question first.
+function_has noteFaceMessage '} else if (message === FaceModel.NO_MATCH_MESSAGE) {' || fail "the lock follows the helper's timeout line"
+function_has noteFaceMessage 'if (faceAuthenticating) faceNoMatch = true' || fail "only a running scan's timeout line marks a stranger"
+function_has noteFaceMessage 'faceNoMatch = false' || fail "every scan starts without a verdict"
+grep -q 'onError: function(error) { root.handleFaceError() }' "$service" || fail "the face context's error goes through the stranger check"
+function_has handleFaceError 'if (!scanning || !faceNoMatch) {' || fail "an error without the timeout line stays an error"
+function_has handleFaceError 'settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))' || fail "a real error still says the face is unavailable"
+{ function_has handleFaceError 'settleFaceAttempt("face-no-match")' && function_has handleFaceError 'rejectFace()' &&
+  function_has handleFaceError 'faceRearmTimer.restart()'; } || fail "a stranger is asked who they are, and the check waits again after a pause"
+{ function_has rejectFace 'failureMessage = I18n.t("lock.faceNoMatch")' && function_has rejectFace 'faceNoMatchTimer.restart()'; } ||
+  fail "the question starts the hold"
+grep -Pzo 'id: faceNoMatchTimer\s*interval: FaceModel\.NO_MATCH_HOLD_MS\s*repeat: false\s*onTriggered: root\.followUpNoMatch\(\)' "$service" >/dev/null ||
+  fail "the hold comes from the model and ends in the follow-up"
+{ function_has followUpNoMatch 'if (failureMessage !== I18n.t("lock.faceNoMatch")) return' &&
+  function_has followUpNoMatch 'failureMessage = FaceModel.noMatchFollowUp(currentFaceState(), I18n.t)'; } ||
+  fail "the follow-up replaces only the question still standing, by what the lock still offers"
+function_has resetAuthenticationState 'faceNoMatchTimer.stop()' || fail "a new lock or an unlock ends the hold"
+function_has noteFaceMessage 'faceNoMatchTimer.stop()' || fail "a new scan ends the hold"
+pass "a face the lock does not know is asked \"Who are you?\" for ten seconds, then told to enter the password"
 
 # Each lock bounds the offer: so many scans, so long after locking. The policy
 # is root's file, the count and the clock belong to the lock, and the decision

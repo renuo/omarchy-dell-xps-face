@@ -27,6 +27,7 @@ Item {
   property bool fingerprintConfigured: false
   property bool faceConfigured: false
   property bool faceAuthenticating: false
+  property bool faceNoMatch: false
   property int faceAttempts: 0
   property double faceLockedAtMs: 0
   property bool faceWindowExpired: true
@@ -233,6 +234,7 @@ Item {
     if (passwordPam.active) passwordPam.abort()
     if (fingerprintPam.active) fingerprintPam.abort()
     faceRearmTimer.stop()
+    faceNoMatchTimer.stop()
     settleFaceAttempt()
     faceAttempts = 0
   }
@@ -543,11 +545,15 @@ Item {
         return
       }
       faceAuthenticating = true
+      faceNoMatch = false
       faceAttempts += 1
       failureMessage = ""
+      faceNoMatchTimer.stop()
       faceAbortTimer.restart()
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
+    } else if (message === FaceModel.NO_MATCH_MESSAGE) {
+      if (faceAuthenticating) faceNoMatch = true
     } else if (message === FaceModel.REFUSED_MESSAGE) {
       failureMessage = I18n.t("lock.faceRefused")
       logEvent("face-refused: another prompt waits for the key")
@@ -598,9 +604,33 @@ Item {
       failureMessage = I18n.t("lock.faceUnavailable")
     } else {
       logEvent("face-no-match")
-      failureMessage = I18n.t("lock.faceNoMatch")
+      rejectFace()
     }
     faceRearmTimer.restart()
+  }
+
+  function handleFaceError() {
+    var scanning = faceAuthenticating
+    if (!scanning || !faceNoMatch) {
+      settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
+      return
+    }
+    settleFaceAttempt("face-no-match")
+    rejectFace()
+    faceRearmTimer.restart()
+  }
+
+  function rejectFace() {
+    if (!lockRequested) return
+    failureMessage = I18n.t("lock.faceNoMatch")
+    faceNoMatchTimer.restart()
+  }
+
+  // Typing or a password check may have replaced the question already.
+  function followUpNoMatch() {
+    if (failureMessage !== I18n.t("lock.faceNoMatch")) return
+    refreshFaceWindow()
+    failureMessage = FaceModel.noMatchFollowUp(currentFaceState(), I18n.t)
   }
 
   function handleFingerprintFinished(result) {
@@ -775,9 +805,7 @@ Item {
     }
 
     // A completed(Error) follows; settling here keeps the LED off meanwhile.
-    onError: function(error) {
-      root.settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
-    }
+    onError: function(error) { root.handleFaceError() }
   }
 
   // The lock only starts decoding its wallpaper once locked, and a machine
@@ -814,6 +842,13 @@ Item {
       root.settleFaceAttempt("face-timeout", I18n.t("lock.faceUnavailable"))
       root.syncFace()
     }
+  }
+
+  Timer {
+    id: faceNoMatchTimer
+    interval: FaceModel.NO_MATCH_HOLD_MS
+    repeat: false
+    onTriggered: root.followUpNoMatch()
   }
 
   Timer {

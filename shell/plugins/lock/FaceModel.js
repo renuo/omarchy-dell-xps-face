@@ -14,9 +14,16 @@ var REARM_DELAY_MS = 1500
 
 // Lines on the face check's conversation: omarchy-face-match prints the first
 // when the key starts a scan, omarchy-face-key the second when another
-// program waited for the key at the same time.
+// program waited for the key at the same time. Howdy tells a face it does not
+// know only by running out of time, and pam_exec turns that, like every
+// refusal, into a system error, so the helper's third line is what tells a
+// stranger from a broken camera.
 var SCAN_MESSAGE = "Scanning face…"
 var REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
+var NO_MATCH_MESSAGE = "Face detection timeout reached"
+
+// "Who are you?" stands this long before the field says what is left.
+var NO_MATCH_HOLD_MS = 10000
 
 // A lock offers the face for a few scans and for a while after it was taken;
 // past either, only the password opens it. /etc/omarchy/face.conf sets both,
@@ -61,17 +68,25 @@ function placeholderText(state, t) {
   return t("lock.enterPassword")
 }
 
+// "" while a scan is left, since the placeholder then offers the face again.
+function noMatchFollowUp(state, t) {
+  return state === "offered" ? "" : t("lock.enterPassword")
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
     REARM_DELAY_MS: REARM_DELAY_MS,
     SCAN_MESSAGE: SCAN_MESSAGE,
     REFUSED_MESSAGE: REFUSED_MESSAGE,
+    NO_MATCH_MESSAGE: NO_MATCH_MESSAGE,
+    NO_MATCH_HOLD_MS: NO_MATCH_HOLD_MS,
     DEFAULT_ATTEMPTS: DEFAULT_ATTEMPTS,
     DEFAULT_WINDOW_MINUTES: DEFAULT_WINDOW_MINUTES,
     parsePolicy: parsePolicy,
     windowExpired: windowExpired,
     faceState: faceState,
-    placeholderText: placeholderText
+    placeholderText: placeholderText,
+    noMatchFollowUp: noMatchFollowUp
   }
 }

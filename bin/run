@@ -338,9 +338,9 @@ step_lock_failed() {
 
   needs lock || return
   attempts=$(policy LOCK_ATTEMPTS 1)
-  say "The screen locks. Turn away from the camera or cover it, then press the Copilot key $attempts time(s)."
-  say "Unlock with your password."
-  expect "'No match', then 'Password (face failed)' without the camera; the key scans no more."
+  say "The screen locks. Let someone else face the camera, or cover it, then press the Copilot key $attempts time(s)."
+  say "Type nothing for ten seconds after the last scan, then unlock with your password."
+  expect "'Who are you?' for ten seconds, then 'Enter Password' without the camera; the key scans no more."
   lock_and_wait omarchy-system-lock
   verdict
 }

@@ -41,9 +41,16 @@ var REARM_DELAY_MS = 1500
 
 // Lines on the face check's conversation: omarchy-face-match prints the first
 // when the key starts a scan, omarchy-face-key the second when another
-// program waited for the key at the same time.
+// program waited for the key at the same time. Howdy tells a face it does not
+// know only by running out of time, and pam_exec turns that, like every
+// refusal, into a system error, so the helper's third line is what tells a
+// stranger from a broken camera.
 var SCAN_MESSAGE = "Scanning face\u2026"
 var REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
+var NO_MATCH_MESSAGE = "Face detection timeout reached"
+
+// "Who are you?" stands this long before the field says what is left.
+var NO_MATCH_HOLD_MS = 10000
 
 // A lock offers the face for a few scans and for a while after it was taken;
 // past either, only the password opens it. /etc/omarchy/face.conf sets both,
@@ -88,18 +95,26 @@ function placeholderText(state, t) {
   return t("lock.enterPassword")
 }
 
+// "" while a scan is left, since the placeholder then offers the face again.
+function noMatchFollowUp(state, t) {
+  return state === "offered" ? "" : t("lock.enterPassword")
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
     REARM_DELAY_MS: REARM_DELAY_MS,
     SCAN_MESSAGE: SCAN_MESSAGE,
     REFUSED_MESSAGE: REFUSED_MESSAGE,
+    NO_MATCH_MESSAGE: NO_MATCH_MESSAGE,
+    NO_MATCH_HOLD_MS: NO_MATCH_HOLD_MS,
     DEFAULT_ATTEMPTS: DEFAULT_ATTEMPTS,
     DEFAULT_WINDOW_MINUTES: DEFAULT_WINDOW_MINUTES,
     parsePolicy: parsePolicy,
     windowExpired: windowExpired,
     faceState: faceState,
-    placeholderText: placeholderText
+    placeholderText: placeholderText,
+    noMatchFollowUp: noMatchFollowUp
   }
 }
 '''
@@ -134,11 +149,15 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
         return
       }
       faceAuthenticating = true
+      faceNoMatch = false
       faceAttempts += 1
       failureMessage = ""
+      faceNoMatchTimer.stop()
       faceAbortTimer.restart()
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
+    } else if (message === FaceModel.NO_MATCH_MESSAGE) {
+      if (faceAuthenticating) faceNoMatch = true
     } else if (message === FaceModel.REFUSED_MESSAGE) {
       failureMessage = I18n.t("lock.faceRefused")
       logEvent("face-refused: another prompt waits for the key")
@@ -189,9 +208,33 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
       failureMessage = I18n.t("lock.faceUnavailable")
     } else {
       logEvent("face-no-match")
-      failureMessage = I18n.t("lock.faceNoMatch")
+      rejectFace()
     }
     faceRearmTimer.restart()
+  }
+
+  function handleFaceError() {
+    var scanning = faceAuthenticating
+    if (!scanning || !faceNoMatch) {
+      settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
+      return
+    }
+    settleFaceAttempt("face-no-match")
+    rejectFace()
+    faceRearmTimer.restart()
+  }
+
+  function rejectFace() {
+    if (!lockRequested) return
+    failureMessage = I18n.t("lock.faceNoMatch")
+    faceNoMatchTimer.restart()
+  }
+
+  // Typing or a password check may have replaced the question already.
+  function followUpNoMatch() {
+    if (failureMessage !== I18n.t("lock.faceNoMatch")) return
+    refreshFaceWindow()
+    failureMessage = FaceModel.noMatchFollowUp(currentFaceState(), I18n.t)
   }
 
 '''
@@ -209,9 +252,7 @@ FACE_PAM = '''
     }
 
     // A completed(Error) follows; settling here keeps the LED off meanwhile.
-    onError: function(error) {
-      root.settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
-    }
+    onError: function(error) { root.handleFaceError() }
   }
 '''
 
@@ -223,6 +264,13 @@ FACE_TIMER = '''  Timer {
       root.settleFaceAttempt("face-timeout", I18n.t("lock.faceUnavailable"))
       root.syncFace()
     }
+  }
+
+  Timer {
+    id: faceNoMatchTimer
+    interval: FaceModel.NO_MATCH_HOLD_MS
+    repeat: false
+    onTriggered: root.followUpNoMatch()
   }
 
   Timer {
@@ -344,6 +392,7 @@ def patch_lock(src, dst):
     service = "\n".join(lines)
     service = once(service, "  property bool fingerprintConfigured: false\n",
         "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n"
+        "  property bool faceNoMatch: false\n"
         "  property int faceAttempts: 0\n  property double faceLockedAtMs: 0\n  property bool faceWindowExpired: true\n"
         "  property var facePolicy: FaceModel.parsePolicy(\"\")\n"
         "  readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)\n")
@@ -351,7 +400,7 @@ def patch_lock(src, dst):
         "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating || faceAuthenticating\n")
     service = once(service, "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n",
         "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n"
-        "    faceRearmTimer.stop()\n    settleFaceAttempt()\n    faceAttempts = 0\n")
+        "    faceRearmTimer.stop()\n    faceNoMatchTimer.stop()\n    settleFaceAttempt()\n    faceAttempts = 0\n")
     service = once(service, "    resetAuthenticationState()\n    lockRequested = true\n",
         "    resetAuthenticationState()\n    lockRequested = true\n    faceLockedAtMs = Date.now()\n    refreshFaceWindow()\n")
     service = once(service, "    logEvent(\"lock-stranded: recovering\")\n    beginLock()\n",
