@@ -12,7 +12,7 @@ face_conf=/etc/omarchy/face.conf
 face_key=/usr/bin/omarchy-face-key
 # The driver package's udev rule names the relay device here whatever video
 # number it got at boot, and keeps it root's alone.
-face_device=/dev/hm1092-ir
+face_device=/dev/video-hm1092-ir
 # The lock screen's helper elevates through this grant; nothing else uses it.
 lock_grant=/etc/sudoers.d/omarchy-face-match
 key_socket=/etc/systemd/system/omarchy-face-key.socket

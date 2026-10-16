@@ -14,7 +14,7 @@ pam_dir=/etc/pam.d
 face_conf=/etc/omarchy/face.conf
 hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"
 i2c_devices=/sys/bus/i2c/devices
-ir_device=/dev/hm1092-ir
+ir_device=/dev/video-hm1092-ir
 plugins_dir="$HOME/.config/omarchy/plugins"
 me=${USER:-$(id -un)}
 

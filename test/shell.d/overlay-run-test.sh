@@ -30,12 +30,12 @@ mkdir -p "$stub_bin"
 # each.
 # shellcheck disable=SC2016 # the literals are what bin/run's source says
 for literal in 'bin_dir=/usr/bin' 'pam_dir=/etc/pam.d' 'face_conf=/etc/omarchy/face.conf' \
-  'hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"' 'i2c_devices=/sys/bus/i2c/devices' 'ir_device=/dev/hm1092-ir'; do
+  'hw_check="$ROOT/bin/omarchy-hw-dell-xps-ir-camera"' 'i2c_devices=/sys/bus/i2c/devices' 'ir_device=/dev/video-hm1092-ir'; do
   (( $(grep -Fxc "$literal" "$script") == 1 )) || fail "bin/run names $literal exactly once"
 done
 sed -e "s|^ROOT=.*|ROOT=\"$ROOT\"|" -e "s|^bin_dir=/usr/bin$|bin_dir=$usr_bin|" -e "s|^pam_dir=/etc/pam.d$|pam_dir=$pamd|" \
   -e "s|^face_conf=/etc/omarchy/face.conf$|face_conf=$face_conf|" -e "s|^hw_check=.*|hw_check=$stub_bin/hw|" \
-  -e "s|^i2c_devices=/sys/bus/i2c/devices$|i2c_devices=$i2c|" -e "s|^ir_device=/dev/hm1092-ir$|ir_device=$ir_device|" "$script" >"$copy"
+  -e "s|^i2c_devices=/sys/bus/i2c/devices$|i2c_devices=$i2c|" -e "s|^ir_device=/dev/video-hm1092-ir$|ir_device=$ir_device|" "$script" >"$copy"
 pass "bin/run names its fixed paths once each, and the test drives a retargeted copy"
 
 # gum answers from a queue, one line per question; an empty queue is Ctrl+C.

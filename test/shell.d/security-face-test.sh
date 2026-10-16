@@ -39,12 +39,12 @@ legacy_module="pam_python.so $seclib/howdy/pam.py"
 for literal in 'security_lib=/usr/lib/security' 'lock_pam=/etc/pam.d/omarchy-lock-face' \
   'verify_pam=/etc/pam.d/omarchy-face-verify' 'face_conf=/etc/omarchy/face.conf' 'face_key=/usr/bin/omarchy-face-key' \
   'key_socket=/etc/systemd/system/omarchy-face-key.socket' 'key_service=/etc/systemd/system/omarchy-face-key.service' \
-  'face_device=/dev/hm1092-ir' 'lock_grant=/etc/sudoers.d/omarchy-face-match'; do
+  'face_device=/dev/video-hm1092-ir' 'lock_grant=/etc/sudoers.d/omarchy-face-match'; do
   (( $(grep -Fxc "$literal" "$setup") == 1 )) || fail "setup names $literal exactly once"
 done
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
   -e "s|^face_key=/usr/bin/omarchy-face-key$|face_key=$face_key|" \
-  -e "s|^face_device=/dev/hm1092-ir$|face_device=$ir_device|" \
+  -e "s|^face_device=/dev/video-hm1092-ir$|face_device=$ir_device|" \
   -e "s|/etc/pam.d/|$pamd/|g" \
   -e "s|/etc/howdy/|$etc_howdy/|g" \
   -e "s|/etc/systemd/system/|$units/|g" \
@@ -54,7 +54,7 @@ sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" \
 pass "setup names its fixed paths once each, and the test drives a retargeted copy"
 
 # The predicate takes no arguments; the driver is the package, and the device
-# Howdy reads is the relay's stable /dev/hm1092-ir.
+# Howdy reads is the relay's stable /dev/video-hm1092-ir.
 cat >"$stub_bin/omarchy-hw-dell-xps-ir-camera" <<'SH'
 #!/bin/bash
 printf 'hw %s\n' "$*" >>"$TEST_LOG"

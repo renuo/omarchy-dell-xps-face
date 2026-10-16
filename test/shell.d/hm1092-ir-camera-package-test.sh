@@ -85,8 +85,13 @@ label=$(sed -n 's/^CARD_LABEL="\(.*\)"$/\1/p' "$pkg/hm1092-ir-camera.conf")
 [[ -n $label ]] || fail "the conf names the device"
 grep -qF "ATTR{name}==\"$label\"" "$pkg/72-hm1092-ir-camera.rules" || fail "the udev symlink rule uses the conf's device name"
 (( $(grep -cF "\"$label\"" "$pkg/hide-hm1092-ir-camera.conf") == 2 )) || fail "the WirePlumber rule hides the conf's device name"
-grep -qF 'SYMLINK+="hm1092-ir"' "$pkg/72-hm1092-ir-camera.rules" || fail "the udev rule publishes /dev/hm1092-ir"
-grep -qx 'face_device=/dev/hm1092-ir' "$ROOT/bin/omarchy-setup-security-face" || fail "the face setup reads the path the udev rule publishes"
+grep -qF 'SYMLINK+="video-hm1092-ir"' "$pkg/72-hm1092-ir-camera.rules" || fail "the udev rule publishes /dev/video-hm1092-ir"
+grep -qx 'face_device=/dev/video-hm1092-ir' "$ROOT/bin/omarchy-setup-security-face" || fail "the face setup reads the path the udev rule publishes"
+# OpenCV hands a path to FFmpeg first, and FFmpeg takes a path for a camera
+# only when it starts with /dev/video; OpenCV's own V4L2 reader, which gets
+# any other name, fails on the loopback's buffers.
+[[ $(sed -n 's/^face_device=//p' "$ROOT/bin/omarchy-setup-security-face") == /dev/video* ]] ||
+  fail "the stable path starts with /dev/video, so Howdy reads it through FFmpeg"
 pass "the device name agrees across the conf, udev and WirePlumber, and its stable path with the face setup"
 
 # Only root reads the relay device: Howdy always runs as root, and a session
@@ -95,7 +100,7 @@ pass "the device name agrees across the conf, udev and WirePlumber, and its stab
 # video4linux node for the seat user and 73-seat-late turns that tag into an
 # ACL, so the rule must sit between them.
 rule=$(grep -F "ATTR{name}==\"$label\"" "$pkg/72-hm1092-ir-camera.rules")
-for part in 'TAG-="uaccess"' 'TAG-="seat"' 'MODE="0600"' 'GROUP="root"' 'SYMLINK+="hm1092-ir"'; do
+for part in 'TAG-="uaccess"' 'TAG-="seat"' 'MODE="0600"' 'GROUP="root"' 'SYMLINK+="video-hm1092-ir"'; do
   grep -qF "$part" <<<"$rule" || fail "the relay device rule carries $part" "$rule"
 done
 [[ $(grep -o '[0-9]*-hm1092-ir-camera.rules' "$pkg/PKGBUILD" | sort -u) =~ ^7[12]-hm1092-ir-camera.rules$ ]] ||

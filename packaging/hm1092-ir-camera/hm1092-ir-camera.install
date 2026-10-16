@@ -10,7 +10,7 @@ post_install() {
   with `dkms status`. Reboot before enrolling: ipu-bridge builds the camera
   graph at boot and cannot be swapped live.
 
-  After the reboot the relay publishes the IR device as /dev/hm1092-ir and
+  After the reboot the relay publishes the IR device as /dev/video-hm1092-ir and
   `omarchy setup security face` can enroll.
 
 MSG

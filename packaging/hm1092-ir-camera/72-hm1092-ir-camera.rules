@@ -4,4 +4,7 @@
 # camera or, while the relay restarts, take the producer side and feed it
 # frames. 70-uaccess tags every video4linux node for the seat user and
 # 73-seat-late turns that tag into an ACL, so this runs in between.
-SUBSYSTEM=="video4linux", ATTR{name}=="HM1092 IR Camera", TAG-="uaccess", TAG-="seat", MODE="0600", GROUP="root", SYMLINK+="hm1092-ir"
+# The link starts with "video" because OpenCV, which Howdy reads through, hands
+# a path to FFmpeg first and FFmpeg takes it for a camera only by that prefix;
+# OpenCV's V4L2 reader, which gets any other name, fails on loopback buffers.
+SUBSYSTEM=="video4linux", ATTR{name}=="HM1092 IR Camera", TAG-="uaccess", TAG-="seat", MODE="0600", GROUP="root", SYMLINK+="video-hm1092-ir"
