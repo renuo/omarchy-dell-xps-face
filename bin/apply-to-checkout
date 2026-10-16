@@ -49,11 +49,14 @@ install -D -m 644 "$ROOT/docs/face-authentication.md" "$checkout/docs/face-authe
 # Each menu row goes directly under its FIDO2 sibling, once. The overlay spells
 # its icon as a \u escape; upstream rows carry the glyph itself, so convert it
 # here and hand awk the text through the environment, where nothing is
-# interpreted.
+# interpreted. A row an earlier overlay applied goes first, so a changed row
+# replaces it.
 insert_after() {
   local anchor=$1 line=$2
 
-  grep -qF -- "$line" "$menu" && return 0
+  grep -qxF -- "$line" "$menu" && return 0
+  KEY="${line%%:*}:" awk 'index($0, ENVIRON["KEY"]) != 1' "$menu" >"$menu.tmp"
+  mv "$menu.tmp" "$menu"
   grep -qF -- "\"$anchor\"" "$menu" || {
     echo "$menu has no \"$anchor\" row to insert after" >&2
     exit 1

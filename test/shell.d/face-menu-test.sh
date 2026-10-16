@@ -27,8 +27,10 @@ done
 
 [[ $(jq -r '."setup.security.face".when' <<<"$entries") == "omarchy-hw-dell-xps-ir-camera" ]] ||
   fail "the setup row is guarded by the hardware predicate"
-[[ $(jq -r '."remove.security.face".when' <<<"$entries") == "omarchy-pkg-present howdy" ]] ||
-  fail "the remove row is guarded by Howdy being installed"
+# The setup installs the driver first and stops for a reboot, so the removal
+# is offered from then on, before Howdy is there.
+[[ $(jq -r '."remove.security.face".when' <<<"$entries") == "omarchy-pkg-present howdy || omarchy-pkg-present hm1092-ir-camera" ]] ||
+  fail "the remove row is guarded by Howdy or the driver the setup installed"
 pass "the rows show only where they apply"
 
 jq -e '[."setup.security.face", ."remove.security.face"] | all(has("aliases") | not)' <<<"$entries" >/dev/null ||

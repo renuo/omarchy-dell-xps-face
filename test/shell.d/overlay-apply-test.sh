@@ -66,3 +66,12 @@ cp -r "$checkout/default/i18n" "$test_tmp/first"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies again"
 diff -r "$test_tmp/first" "$checkout/default/i18n" >/dev/null || fail "applying twice changes the catalogs no further"
 pass "applying twice adds nothing twice"
+
+# A row an earlier overlay applied is replaced, not kept beside the new one.
+menu="$checkout/default/omarchy/omarchy-menu.jsonc"
+sed -i 's/"when":"[^"]*","action":"omarchy-launch-floating-terminal-with-presentation omarchy-remove-security-face"/"when":"omarchy-pkg-present howdy","action":"omarchy-launch-floating-terminal-with-presentation omarchy-remove-security-face"/' "$menu"
+grep -q '"when":"omarchy-pkg-present howdy",' "$menu" || fail "the fixture holds an earlier remove row" "$(cat "$menu")"
+"$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies over an earlier overlay"
+(( $(grep -c '"remove.security.face"' "$menu") == 1 )) || fail "the menu keeps one remove row" "$(cat "$menu")"
+! grep -q '"when":"omarchy-pkg-present howdy",' "$menu" || fail "the earlier remove row is replaced" "$(cat "$menu")"
+pass "applying over an earlier overlay replaces its menu rows"
