@@ -13,7 +13,7 @@
 # seteuid option suffices there. The lock screen runs its conversation as the
 # session user, and Howdy keeps compare.py and the models readable by root
 # only, so that phase re-executes the packaged copy through the passwordless
-# rule in etc/sudoers.d/omarchy-face-match. The account comes from PAM_USER
+# rule the setup installs as /etc/sudoers.d/omarchy-face-match. The account comes from PAM_USER
 # under pam_exec, which builds the environment itself, and from SUDO_USER under
 # sudo, which sets it after env_reset: a user can only ever match their own face.
 
@@ -30,7 +30,7 @@ security_lib=/usr/lib/security
 compare="$security_lib/howdy/compare.py"
 lock_pam=/etc/pam.d/omarchy-lock-face
 face_key=/usr/bin/omarchy-face-key
-# The path etc/sudoers.d/omarchy-face-match names; the privileged half always
+# The path /etc/sudoers.d/omarchy-face-match names; the privileged half always
 # runs from there, never from whichever copy pam_exec invoked.
 PACKAGED_PATH=/usr/bin/omarchy-face-match
 
