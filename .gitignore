@@ -1,7 +1,1 @@
-# makepkg output when building packaging/*/ in place
-packaging/*/src/
-packaging/*/pkg/
-packaging/*/*.pkg.tar.*
-packaging/*/*.tar.gz
-packaging/*/ipu-bridge-*.c
 __pycache__/

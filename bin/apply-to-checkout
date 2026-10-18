@@ -24,10 +24,10 @@ done
 
 install -m 755 "$ROOT"/bin/omarchy-* "$checkout/bin/"
 for test in "$ROOT"/test/shell.d/*-test.sh; do
-  # Upstream owns the shared library, the package suite tests packaging/ and
-  # the overlay- suites this overlay's own scripts, which all stay here; only the
-  # checkout's own suites go across.
-  [[ ${test##*/} == "base-test.sh" || ${test##*/} == hm1092-ir-camera-package-test.sh || ${test##*/} == overlay-*-test.sh ]] && continue
+  # Upstream owns the shared library and the overlay- suites test this
+  # overlay's own scripts, so both stay here; only the checkout's own suites
+  # go across.
+  [[ ${test##*/} == "base-test.sh" || ${test##*/} == overlay-*-test.sh ]] && continue
   install -m 644 "$test" "$checkout/test/shell.d/"
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
@@ -103,4 +103,4 @@ fi
 rm -f "$checkout/install/hardware/intel/ipu7-ir-camera.sh" "$checkout/test/shell.d/ipu7-ir-camera-install-test.sh"
 
 echo "Applied to $checkout. Run I18N_STRUCTURAL=1 ./test/shell there, then omarchy dev pkg-test and omarchy dev link $checkout."
-echo "The driver package itself lives in packaging/hm1092-ir-camera and is not part of the checkout."
+echo "The driver package hm1092-ir-camera is not part of the checkout: https://github.com/omacom/omarchy-pkgs/pull/1213"

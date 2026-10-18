@@ -190,7 +190,7 @@ step_probe() {
     fi
   done
   if [[ -z $driver ]]; then
-    result failed "no driver bound to the sensor: install hm1092-ir-camera and reboot"
+    result failed "no driver bound to the sensor: install hm1092-ir-camera on linux-omarchy 7.2.8-2 or later and reboot"
     return
   fi
   say "driver: $driver"

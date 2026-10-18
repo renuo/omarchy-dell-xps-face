@@ -237,6 +237,7 @@ grep -qF "device: $ir_device" "$output" || fail "the probe names the relay devic
 reset_camera 0 1
 invoke -- probe && fail "a sensor without a driver fails the probe"
 grep -q 'hm1092-ir-camera' "$output" || fail "the missing driver names the package" "$(cat "$output")"
+grep -qF 'linux-omarchy 7.2.8-2' "$output" || fail "the missing driver names the kernel it needs" "$(cat "$output")"
 reset_camera 1 0
 invoke -- probe && fail "a driver without the relay device fails the probe"
 grep -q 'hm1092-relay' "$output" || fail "the missing relay device names its unit" "$(cat "$output")"

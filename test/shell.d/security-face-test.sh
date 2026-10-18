@@ -268,6 +268,7 @@ reset_fixture
 invoke_setup norelay stable && fail "setup fails while the relay publishes no device"
 grep -q 'relay publishes no device' "$output" || fail "the missing relay device is explained" "$(cat "$output")"
 grep -q 'hm1092-relay' "$output" || fail "the relay unit to check is named" "$(cat "$output")"
+grep -qF 'linux-omarchy 7.2.8-2' "$output" || fail "the kernel whose ipu-bridge lists the sensor is named" "$(cat "$output")"
 assert_no_mutation "a missing relay device configures nothing"
 ! grep -q '^aur\|^pkg-add' "$log" || fail "an installed driver is not installed again" "$(cat "$log")"
 pass "setup explains the missing relay device and stops before installing anything"

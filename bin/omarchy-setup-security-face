@@ -245,8 +245,10 @@ if [[ ! -x $face_key ]]; then
 fi
 
 # The driver is installed here, for the machine whose owner asked for the
-# face, rather than by the installer on every matching XPS. ipu-bridge builds
-# the camera graph at boot, so the relay device appears only after a reboot.
+# face, rather than by the installer on every matching XPS. DKMS builds the
+# sensor module once pacman is done, and the module may only load after
+# camera-init has the bridge, which happens at boot, so the relay device
+# appears after a reboot.
 if ! omarchy-pkg-present hm1092-ir-camera; then
   echo "Installing the IR camera driver (hm1092-ir-camera)..."
   omarchy-pkg-add hm1092-ir-camera
@@ -256,6 +258,7 @@ fi
 
 if [[ ! -e $face_device ]]; then
   echo -e "\e[31mThe IR camera driver is installed, but its grayscale relay publishes no device.\e[0m"
+  echo "The sensor binds only on linux-omarchy 7.2.8-2 or later, whose ipu-bridge lists it."
   echo "Check 'systemctl status hm1092-relay' and run this setup again once $face_device exists."
   exit 1
 fi

@@ -13,17 +13,13 @@ if command -v shellcheck >/dev/null; then
   # bin/ also holds Python commands; only the bash scripts go to shellcheck.
   mapfile -t bash_bins < <(grep -l '^#!/bin/bash' "$ROOT"/bin/*)
   shellcheck -x -e SC1090,SC1091 \
-    "${bash_bins[@]}" "$ROOT"/install/user/first-run/*.hook "$ROOT"/test/shell.d/*-test.sh \
-    "$ROOT"/packaging/*/hm1092-ir-led "$ROOT"/packaging/*/hm1092-ir-led-sleep || status=1
-  # Sourced fragments: PKGBUILD and .install are makepkg's.
-  shellcheck -s bash -e SC2034,SC2154,SC2164 \
-    "$ROOT"/packaging/*/PKGBUILD "$ROOT"/packaging/*/*.install || status=1
+    "${bash_bins[@]}" "$ROOT"/install/user/first-run/*.hook "$ROOT"/test/shell.d/*-test.sh || status=1
 else
   echo "shellcheck is not installed; run bin/setup to add it" >&2
   status=1
 fi
 
-for script in "$ROOT"/bin/patch-shell-plugins "$ROOT"/bin/omarchy-face-key "$ROOT"/packaging/*/hm1092-relay; do
+for script in "$ROOT"/bin/patch-shell-plugins "$ROOT"/bin/omarchy-face-key; do
   python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$script" || status=1
 done
 
