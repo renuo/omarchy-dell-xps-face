@@ -73,7 +73,7 @@ test/shell.d/                      the suites; overlay-* stay here, the rest go 
 
 ## Status
 
-Verified on a Dell XPS 14 DA14260 with Enter as the consent (Omarchy 4.0.4, Linux 7.2.5, with this repository's earlier driver build); the Copilot key awaits its trial on the device. The driver package from [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213) streams on the same machine with linux-omarchy 7.2.8-8, and Howdy matches through it. Applied to upstream's `quattro` at 84cfb93 the overlay passes the translation gate and adds no failing test. Its pull request waits for [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685), and for the driver package to reach Omarchy's repository.
+Verified on a Dell XPS 14 DA14260, first with Enter as the consent (Omarchy 4.0.4, Linux 7.2.5, with this repository's earlier driver build), then with the Copilot key on linux-omarchy 7.2.8-8 and the driver package from [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213). Applied to upstream's `quattro` at 84cfb93 the overlay passes the translation gate and adds no failing test. Its pull request waits for [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685), and for the driver package to reach Omarchy's repository.
 
 ## License
 

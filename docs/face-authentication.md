@@ -17,9 +17,9 @@ No kernel has a sensor driver yet; one is under review on linux-media. `ipu-brid
 | Grayscale relay for Howdy | `hm1092-ir-camera`: `hm1092-relay` publishes `HM1092 IR Camera` (v4l2loopback, GRAY8, `/dev/video-hm1092-ir`, root's alone), hidden from PipeWire, and owns the flood LED | Verified on the XPS 14: upright, well-lit 648x368 frames (stride 1344), LED lit only while a consumer reads |
 | Install on demand | `omarchy setup security face` installs `hm1092-ir-camera` when it is missing, then asks for a reboot; the installer installs nothing on matching machines, and `install/user/first-run/setup-face.hook` only invites to the setup | Done; needs the package in Omarchy's repository |
 | Face matching | Howdy from the AUR, pointed at that device; `pam_exec.so` runs `omarchy-face-match` around Howdy's `compare.py` | Done by the wizard; enrolled on the XPS 14 |
-| Consent | `omarchy-face-key`, a socket-activated root service that reads the Copilot key from the keyboard itself, and `default/hypr/toggles/face-key.lua`, which takes the key from every window | Tested against fake evdev nodes over a loopback stand-in for its socket; awaits a trial on the XPS 14 |
+| Consent | `omarchy-face-key`, a socket-activated root service that reads the Copilot key from the keyboard itself, and `default/hypr/toggles/face-key.lua`, which takes the key from every window | Tested against fake evdev nodes over a loopback stand-in for its socket; verified on the XPS 14 (2026-10-18) |
 | sudo and polkit | `auth sufficient` behind the clamshell gate, like fingerprint | Done by the wizard |
-| Lock screen | `/etc/pam.d/omarchy-lock-face`, a face context in `shell/plugins/lock` bounded by `/etc/omarchy/face.conf`, and the grant `/etc/sudoers.d/omarchy-face-match` for the helper's privileged half, installed by the setup only with the lock screen | Verified on the XPS 14 with Enter as the consent (2026-10-14); the key and the per-lock limits are unit-tested and await a trial |
+| Lock screen | `/etc/pam.d/omarchy-lock-face`, a face context in `shell/plugins/lock` bounded by `/etc/omarchy/face.conf`, and the grant `/etc/sudoers.d/omarchy-face-match` for the helper's privileged half, installed by the setup only with the lock screen | Verified on the XPS 14 with Enter as the consent (2026-10-14); the per-lock limits are unit-tested and await a trial |
 
 ## Contracts
 
