@@ -12,7 +12,7 @@ trap 'rm -rf "$test_tmp"' EXIT
 commands=(omarchy-hw-dell-xps-ir-camera omarchy-setup-security-face omarchy-remove-security-face omarchy-face-match)
 
 # The metadata lint test/cli applies to every bin/omarchy-* executable; hold
-# this overlay's commands to it here, where they are also tested on their own.
+# the face commands to it here, where they are also tested on their own.
 for command in "${commands[@]}"; do
   binary_path="$ROOT/bin/$command"
   [[ -x $binary_path ]] || fail "$command is an executable command"
@@ -25,8 +25,8 @@ for command in "${commands[@]}"; do
 done
 pass "all shipped commands carry slim self-documenting metadata"
 
-# Routing is the installed dispatcher's job: run a copy of it over this
-# overlay's commands alone, the way test/cli builds its own command tables.
+# Routing is the installed dispatcher's job: run a copy of it over the
+# face commands alone, the way test/cli builds its own command tables.
 dispatcher="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy"
 [[ -x $dispatcher ]] || dispatcher=$(command -v omarchy || true)
 if [[ -z $dispatcher || ! -x $dispatcher ]]; then
