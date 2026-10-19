@@ -24,12 +24,16 @@ root_gate='(( EUID == 0 )) && valid_account "${PAM_USER:-}"'
 (( $(grep -Fxc 'security_lib=/usr/lib/security' "$helper") == 1 )) || fail "the helper names Howdy's tree once"
 (( $(grep -Fxc 'lock_pam=/etc/pam.d/omarchy-lock-face' "$helper") == 1 )) || fail "the helper names the lock's PAM service once"
 (( $(grep -Fxc 'face_key=/usr/bin/omarchy-face-key' "$helper") == 1 )) || fail "the helper names the key service once"
+(( $(grep -Fxc 'howdy_config=/etc/howdy/config.ini' "$helper") == 1 )) || fail "the helper names Howdy's /etc configuration once"
+(( $(grep -Fxc 'laptop_closed=/usr/bin/omarchy-hw-laptop-closed' "$helper") == 1 )) || fail "the helper names the lid predicate once"
 (( $(grep -Fc "$root_gate" "$helper") == 2 )) || fail "the hint and the face-only wait act only as root"
 # shellcheck disable=SC2016 # the literal is what the helper's source says
 (( $(grep -Fc '/usr/bin/python3 "$compare"' "$helper") == 1 )) || fail "the helper runs compare.py with the system interpreter once"
 sed -e "s|^security_lib=/usr/lib/security$|security_lib=$seclib|" -e "s|/usr/bin/python3|$stub_bin/python3|" \
   -e "s|^lock_pam=/etc/pam.d/omarchy-lock-face$|lock_pam=$test_tmp/omarchy-lock-face|" \
   -e "s|^face_key=/usr/bin/omarchy-face-key$|face_key=$stub_bin/omarchy-face-key|" \
+  -e "s|^howdy_config=/etc/howdy/config.ini$|howdy_config=$test_tmp/howdy-etc/config.ini|" \
+  -e "s|^laptop_closed=/usr/bin/omarchy-hw-laptop-closed$|laptop_closed=$stub_bin/omarchy-hw-laptop-closed|" \
   -e "s|(( EUID == 0 )) && valid_account|(( TEST_EUID == 0 )) \&\& valid_account|" "$helper" >"$copy"
 (( $(grep -Fc '(( TEST_EUID == 0 )) && valid_account' "$copy") == 2 )) || fail "the copy reads root from TEST_EUID"
 pass "the helper names its fixed paths, and the test drives a retargeted copy"
@@ -44,15 +48,22 @@ cat >"$stub_bin/logger" <<'SH'
 printf 'logger %s\n' "$*" >>"$TEST_LOG"
 SH
 # The key service: TEST_KEY=pressed releases a waiting prompt and lets the
-# helper take the press; anything else does neither.
-cat >"$stub_bin/omarchy-face-key" <<'SH'
+# helper take the press; anything else does neither. TEST_LID_AFTER_KEY shuts
+# the lid while the prompt waits.
+lid="$test_tmp/lid-closed"
+cat >"$stub_bin/omarchy-face-key" <<SH
 #!/bin/bash
-printf 'key %s\n' "$*" >>"$TEST_LOG"
-case $1 in
-  wait | take) [[ ${TEST_KEY:-} == pressed ]] ;;
+printf 'key %s\n' "\$*" >>"\$TEST_LOG"
+[[ \${TEST_LID_AFTER_KEY:-} != 1 ]] || : >"$lid"
+case \$1 in
+  wait | take) [[ \${TEST_KEY:-} == pressed ]] ;;
   drop) exit 0 ;;
   *) exit 1 ;;
 esac
+SH
+cat >"$stub_bin/omarchy-hw-laptop-closed" <<SH
+#!/bin/bash
+[[ -e $lid ]]
 SH
 chmod +x "$stub_bin"/*
 : >"$seclib/howdy/compare.py"
@@ -167,6 +178,65 @@ invoke_elevated && fail "the grant refuses while the lock screen does not use th
 grep -q 'lock screen' "$output" || fail "the refusal is explained" "$(cat "$output")"
 invoke 0 alice || fail "sudo and polkit, which run the helper through pam_exec, scan without the lock service"
 pass "the sudoers grant scans only while the lock screen uses the face"
+
+# Howdy's own PAM module refuses before it scans while Howdy is disabled or
+# the conversation comes over SSH. The helper takes its place, so it refuses
+# then too, and whenever the lid is shut, the lock screen included: nothing
+# registers, nothing waits, nothing scans.
+# over_ssh <command...>: SSH_CONNECTION only in the helper's parent, since
+# pam_exec builds the helper an environment of its own.
+over_ssh() {
+  SSH_CONNECTION="192.0.2.1 50000 192.0.2.2 22" bash -c 'env -u SSH_CONNECTION "$@"; exit $?' over-ssh "$@"
+}
+hint_over_ssh() {
+  : >"$log"
+  over_ssh env TEST_LOG="$log" TEST_EUID=0 TEST_KEY=pressed PAM_USER=alice PATH="$stub_bin:/usr/bin:/bin" bash "$copy" --hint 2>&1
+}
+# refused <description>: no path registers, waits for or scans a face.
+refused() {
+  [[ -z $(hint 0 pressed) && -z $(<"$log") ]] || fail "$1: the hint offers no face and registers nothing" "$(cat "$log")"
+  invoke 0 alice "" && fail "$1: sudo's answer gets no scan"
+  ! grep -q '^python3' "$log" || fail "$1: sudo's answer never reaches the camera" "$(cat "$log")"
+  wait_only 0 pressed && fail "$1: the face-only check fails"
+  ! grep -q '^key wait\|^python3' "$log" || fail "$1: the face-only check neither waits nor scans" "$(cat "$log")"
+  : >"$test_tmp/omarchy-lock-face"
+  invoke_elevated && fail "$1: the lock screen's check fails"
+  ! grep -q '^key wait\|^python3' "$log" || fail "$1: the lock screen's check neither waits nor scans" "$(cat "$log")"
+  rm "$test_tmp/omarchy-lock-face"
+}
+
+: >"$lid"
+refused "with the lid shut"
+rm "$lid"
+: >"$test_tmp/omarchy-lock-face"
+TEST_LID_AFTER_KEY=1 invoke_elevated && fail "a lid shut while the lock waited stops the scan"
+grep -q '^key wait --lock' "$log" || fail "the lock waited with the lid open" "$(cat "$log")"
+! grep -q '^python3' "$log" || fail "a lid shut while the lock waited never reaches the camera" "$(cat "$log")"
+[[ $(<"$output") != *"Scanning face"* ]] || fail "a lid shut while the lock waited starts no scan" "$(cat "$output")"
+rm -f "$test_tmp/omarchy-lock-face" "$lid"
+pass "with the lid shut, before the key or after it, no stack waits for or scans a face"
+
+printf '[core]\ndisabled = true\n' >"$seclib/howdy/config.ini"
+refused "with Howdy disabled"
+printf '[video]\ndisabled = true\n[core]\n  disabled = False\n' >"$seclib/howdy/config.ini"
+[[ -n $(hint 0 pressed) ]] || fail "only [core] disables Howdy" "$(cat "$log")"
+mkdir -p "$test_tmp/howdy-etc"
+printf '[core]\ndisabled = on\n' >"$test_tmp/howdy-etc/config.ini"
+refused "with Howdy disabled in /etc/howdy"
+rm -r "$test_tmp/howdy-etc"
+pass "Howdy's disabled setting stops every stack, read from the configuration Howdy uses"
+
+rm "$seclib/howdy/config.ini"
+[[ -n $(hint 0 pressed) ]] || fail "outside SSH the hint offers the face" "$(cat "$log")"
+[[ -z $(hint_over_ssh) && -z $(<"$log") ]] || fail "a sudo over SSH offers no face and registers nothing, as Howdy ignores SSH by default" "$(cat "$log")"
+: >"$log"
+printf '' | over_ssh env TEST_LOG="$log" TEST_STATUS=0 TEST_KEY=pressed PAM_USER=alice PATH="$stub_bin:/usr/bin:/bin" \
+  bash "$copy" >"$output" 2>&1 && fail "a sudo over SSH gets no scan"
+! grep -q '^python3' "$log" || fail "a sudo over SSH never reaches the camera" "$(cat "$log")"
+printf '[core]\nignore_ssh = false\n' >"$seclib/howdy/config.ini"
+[[ -n $(hint_over_ssh) ]] || fail "with ignore_ssh off, a sudo over SSH offers the face" "$(cat "$log")"
+rm "$seclib/howdy/config.ini"
+pass "a conversation over SSH gets no face while Howdy ignores SSH"
 
 # Without a readable compare.py the helper elevates instead; that phase has its
 # own suite (face-match-sudoers-test.sh). A stub sudo keeps it out of here.

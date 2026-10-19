@@ -445,10 +445,25 @@ printf '%s\n' "$gate1" 'auth      sufficient pam_fprintd.so' >"$test_tmp/fingerp
 cat "$test_tmp/fingerprint-top" "$pamd/sudo" >"$test_tmp/sudo-with-fingerprint"
 cp "$test_tmp/sudo-with-fingerprint" "$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds beside a fingerprint stack" "$(cat "$output")"
-expected_sudo=$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module"; cat "$test_tmp/sudo-with-fingerprint")
+expected_sudo=$(cat "$test_tmp/fingerprint-top"; expected_block; sed 1,2d "$test_tmp/sudo-with-fingerprint")
 [[ $(<"$pamd/sudo") == "$expected_sudo" ]] ||
-  fail "face goes on top with its own gate and the fingerprint pair stays intact" "$(cat "$pamd/sudo")"
-pass "setup keeps an existing fingerprint stack and its gate"
+  fail "face goes below the fingerprint pair, which keeps its gate, so a typed password reaches pam_unix without waiting for a finger" "$(cat "$pamd/sudo")"
+pass "setup keeps an existing fingerprint stack and its gate, and puts the face below it"
+
+# The face rides on the password prompt, so it goes below every module that
+# waits on its own, FIDO2 too, and an earlier block above one of them moves.
+reset_fixture
+u2f='auth      sufficient pam_u2f.so cue authfile=/etc/fido2/fido2'
+{ printf '%s\n' "$u2f"; cat "$test_tmp/fingerprint-top" "$pamd/sudo"; } >"$test_tmp/sudo-with-both"
+{ expected_block; cat "$test_tmp/sudo-with-both"; } >"$pamd/sudo"
+invoke_setup ready stable || fail "setup succeeds over a face block above FIDO2 and fingerprint" "$(cat "$output")"
+expected_sudo=$(printf '%s\n' "$u2f"; cat "$test_tmp/fingerprint-top"; expected_block; sed 1,3d "$test_tmp/sudo-with-both")
+[[ $(<"$pamd/sudo") == "$expected_sudo" ]] ||
+  fail "an earlier face block above FIDO2 and fingerprint moves below both, once" "$(cat "$pamd/sudo")"
+before_sudo=$(<"$pamd/sudo")
+invoke_setup ready stable || fail "setup succeeds a second time beside FIDO2 and fingerprint" "$(cat "$output")"
+[[ $(<"$pamd/sudo") == "$before_sudo" ]] || fail "a block below FIDO2 and fingerprint stays as it is" "$(cat "$pamd/sudo")"
+pass "the face goes below FIDO2 and fingerprint, and an earlier block above them moves down"
 
 reset_fixture
 printf 'auth      sufficient %s\n%s' "$stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"

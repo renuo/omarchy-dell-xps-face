@@ -30,12 +30,72 @@ security_lib=/usr/lib/security
 compare="$security_lib/howdy/compare.py"
 lock_pam=/etc/pam.d/omarchy-lock-face
 face_key=/usr/bin/omarchy-face-key
+howdy_config=/etc/howdy/config.ini
+laptop_closed=/usr/bin/omarchy-hw-laptop-closed
 # The path /etc/sudoers.d/omarchy-face-match names; the privileged half always
 # runs from there, never from whichever copy pam_exec invoked.
 PACKAGED_PATH=/usr/bin/omarchy-face-match
 
 valid_account() {
   [[ -n $1 && $1 != "." && $1 != ".." && $1 != */* && $1 != *[[:space:]]* ]]
+}
+
+# howdy_setting <section> <key> <default>: the value as Howdy's configparser
+# reads it, from the configuration its compare.py uses.
+howdy_setting() {
+  local config=$howdy_config
+
+  [[ -f $config ]] || config="$security_lib/howdy/config.ini"
+  if [[ ! -r $config ]]; then
+    echo "$3"
+    return
+  fi
+  awk -v section="$1" -v key="$2" -v fallback="$3" '
+    /^[[:space:]]*\[.*\][[:space:]]*$/ { current = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", current); next }
+    current == section && $0 ~ "^[[:space:]]*" key "[[:space:]]*[=:]" {
+      value = $0
+      sub(/^[^=:]*[=:][[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      found = 1
+    }
+    END { print (found ? value : fallback) }' "$config"
+}
+
+is_true() {
+  case ${1,,} in
+    1 | yes | true | on) return 0 ;;
+  esac
+  return 1
+}
+
+from_ssh() {
+  tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | grep -qE '^(SSH_CONNECTION|SSH_CLIENT|SSHD_OPTS)='
+}
+
+# Howdy's own PAM module refuses before it scans while Howdy is disabled or the
+# conversation comes over SSH, and this helper takes that module's place. A
+# shut lid covers the camera, so the face is refused then too, as the
+# clamshell gate refuses it in sudo's and polkit's stacks; the lock screen has
+# no gate. pam_exec builds this helper an environment of its own, so SSH shows
+# in the conversation's.
+face_refusal() {
+  if is_true "$(howdy_setting core disabled false)"; then
+    echo "face authentication is disabled in Howdy's configuration"
+  elif is_true "$(howdy_setting core ignore_ssh true)" && from_ssh "$1"; then
+    echo "the conversation comes over SSH"
+  elif "$laptop_closed"; then
+    echo "the lid is closed"
+  fi
+}
+
+refuse_unavailable_face() {
+  local reason
+
+  reason=$(face_refusal "$PPID")
+  if [[ -n $reason ]]; then
+    logger -p auth.info -t howdy "Face refused for $user: $reason"
+    exit 1
+  fi
 }
 
 # Presence is not consent: a camera sees a face whether or not its owner meant
@@ -48,7 +108,7 @@ valid_account() {
 # pam_unix, which gets it through try_first_pass, so the camera stays dark and
 # nothing is echoed or logged.
 if [[ $# == 1 && $1 == --hint ]]; then
-  if (( EUID == 0 )) && valid_account "${PAM_USER:-}" &&
+  if (( EUID == 0 )) && valid_account "${PAM_USER:-}" && [[ -z $(face_refusal "$PPID") ]] &&
     "$face_key" wait --pam-pid "$PPID" --user "$PAM_USER" --detach --tty 2>/dev/null; then
     echo "Press the Copilot key to use your face, or type your password."
   fi
@@ -98,6 +158,7 @@ if [[ ! -r $compare ]]; then
 fi
 
 if (( face_only )); then
+  refuse_unavailable_face
   "$face_key" wait --pam-pid "$PPID" --user "$user" || exit 1
 elif [[ -n ${PAM_USER:-} ]]; then
   response=""
@@ -111,8 +172,12 @@ elif [[ -n ${PAM_USER:-} ]]; then
 else
   # The lock screen keeps this waiting while it offers the face; the key
   # service ends the wait when the lock's window since locking closes.
+  refuse_unavailable_face
   "$face_key" wait --lock --pam-pid "$PPID" --user "$user" || exit 1
 fi
+
+# The lid may have shut while the prompt waited for the key.
+refuse_unavailable_face
 
 # The lock screen follows the scan by this line (shell/plugins/lock/FaceModel.js).
 echo "Scanning face…"

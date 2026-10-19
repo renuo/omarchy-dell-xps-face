@@ -23,6 +23,12 @@ One press serves exactly one waiting prompt. When more than one waits, the
 press serves none: a program waiting at the same moment must not catch a
 press meant for another prompt. They all keep waiting, the user is told who
 asked, and only typing a password or cancelling ends the standoff.
+
+While the lock screen waits for the key, nothing else is on screen, so the
+press is the lock's alone; a prompt waiting meanwhile gets none. That holds
+for a grace after the lock's check last waited too, which covers its scan and
+its return, so a program cannot take the press by ending the lock's check
+just before it. The lock's window runs from the first check of that stretch.
 """
 
 import argparse
@@ -55,14 +61,22 @@ EVENT = struct.Struct("llHHi")
 
 PRESS_VALID_S = 5
 IDLE_EXIT_S = 30
+LOCK_GRACE_S = 20
 DEFAULT_WINDOW_MINUTES = 60
 
 # The lock screen matches these lines (shell/plugins/lock/FaceModel.js).
+ARMED_MESSAGE = "Waiting for the Copilot key"
 REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
+LOCKED_MESSAGE = "Face refused: the lock screen had the Copilot key moments ago"
 
 
 def log(message):
     print(message, file=sys.stderr, flush=True)
+
+
+def boottime():
+    """Seconds on the clock that keeps counting while the machine sleeps."""
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
 
 
 def has_key(words, code):
@@ -104,6 +118,8 @@ class Server:
         self.waiters = {}
         self.pressed = {}
         self.children = []
+        self.lock_since = None
+        self.lock_left = None
         self.last_activity = time.monotonic()
 
     def run(self):
@@ -119,7 +135,7 @@ class Server:
             self.children = [child for child in self.children if child.poll() is None]
             now = time.monotonic()
             self.pressed = {pid: at for pid, at in self.pressed.items() if now - at <= PRESS_VALID_S}
-            if self.buffers or self.waiters or self.pressed:
+            if self.buffers or self.waiters or self.pressed or self.lock_holds_key():
                 self.last_activity = now
             elif now - self.last_activity > IDLE_EXIT_S:
                 return
@@ -160,14 +176,24 @@ class Server:
 
     def handle(self, conn, fields):
         command = fields[0]
-        if command == "WAIT" and len(fields) == 4:
+        if command == "WAIT" and len(fields) == 5 and fields[3] in ("prompt", "lock"):
             # A conversation asking again, like sudo after a wrong password,
             # replaces its earlier prompt rather than competing with it.
             self.drop_waiters(fields[1])
-            self.waiters[conn] = (fields[1], fields[2], fields[3])
-            log(f"{fields[3]} waits for the key")
+            reply = "WAITING"
+            if fields[3] == "lock":
+                if not self.lock_holds_key():
+                    self.lock_since = boottime()
+                left = self.lock_window_left()
+                if left <= 0:
+                    self.send(conn, "EXPIRED")
+                    self.close(conn)
+                    return
+                reply = f"WAITING\t{left:.3f}"
+            self.waiters[conn] = (fields[1], fields[2], fields[3], fields[4])
+            log(f"{fields[4]} waits for the key")
             self.open_keyboards()
-            self.send(conn, "WAITING")
+            self.send(conn, reply)
         elif command == "TAKE" and len(fields) == 2:
             at = self.pressed.pop(fields[1], None)
             self.drop_waiters(fields[1])
@@ -183,9 +209,20 @@ class Server:
             self.close(conn)
 
     def drop_waiters(self, pam_id):
-        for conn, (waiter_id, _, _) in list(self.waiters.items()):
+        for conn, (waiter_id, _, _, _) in list(self.waiters.items()):
             if waiter_id == pam_id:
                 self.close(conn)
+
+    def lock_waiting(self):
+        return [(conn, waiter) for conn, waiter in self.waiters.items() if waiter[2] == "lock"]
+
+    def lock_holds_key(self):
+        if self.lock_waiting():
+            return True
+        return self.lock_left is not None and boottime() - self.lock_left <= LOCK_GRACE_S
+
+    def lock_window_left(self):
+        return self.lock_since + window_seconds() - boottime()
 
     def send(self, conn, message):
         try:
@@ -195,7 +232,9 @@ class Server:
 
     def close(self, conn):
         self.buffers.pop(conn, None)
-        self.waiters.pop(conn, None)
+        waiter = self.waiters.pop(conn, None)
+        if waiter is not None and waiter[2] == "lock" and not self.lock_waiting():
+            self.lock_left = boottime()
         try:
             self.selector.unregister(conn)
         except (KeyError, ValueError):
@@ -248,28 +287,41 @@ class Server:
 
     def key_pressed(self):
         waiting = list(self.waiters.items())
+        if self.lock_holds_key():
+            prompts = [(conn, waiter) for conn, waiter in waiting if waiter[2] != "lock"]
+            if prompts:
+                log("key refused, the lock screen holds the key: " + "; ".join(waiter[3] for _, waiter in prompts))
+                for conn, _ in prompts:
+                    self.send(conn, "LOCKED")
+            waiting = self.lock_waiting()
+            if len(waiting) == 1 and self.lock_window_left() <= 0:
+                conn, (_, _, _, description) = waiting[0]
+                log(f"key refused, the lock's window has closed for {description}")
+                self.send(conn, "EXPIRED")
+                self.close(conn)
+                return
         if len(waiting) == 1:
-            conn, (pam_id, _, description) = waiting[0]
+            conn, (pam_id, _, _, description) = waiting[0]
             log(f"key pressed for {description}")
             self.pressed[pam_id] = time.monotonic()
             self.send(conn, "KEY")
             self.close(conn)
         elif waiting:
-            descriptions = [description for _, (_, _, description) in waiting]
+            descriptions = [description for _, (_, _, _, description) in waiting]
             log("key refused, several prompts wait: " + "; ".join(descriptions))
-            for conn, (_, _, mine) in waiting:
+            for conn, (_, _, _, mine) in waiting:
                 others = list(descriptions)
                 others.remove(mine)
                 self.send(conn, "\t".join(["CONFLICT"] + others))
             self.notify(waiting)
 
     def notify(self, waiting):
-        for user in sorted({user for _, (_, user, _) in waiting}):
+        for user in sorted({user for _, (_, user, _, _) in waiting}):
             try:
                 account = pwd.getpwnam(user)
             except KeyError:
                 continue
-            lines = "\n".join("• " + description for _, (_, _, description) in waiting)
+            lines = "\n".join("• " + description for _, (_, _, _, description) in waiting)
             body = f"{len(waiting)} programs waited for the Copilot key at once, so none got your face:\n{lines}\nType your password, or cancel what you did not start."
             runtime = f"/run/user/{account.pw_uid}"
             env = {
@@ -434,13 +486,22 @@ def wait(args):
     pam_pid = beyond_sudo(args.pam_pid) if args.lock else args.pam_pid
     tty_path = conversation_tty(pam_pid) if args.tty else None
     tty = os.open(tty_path, os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC) if tty_path else None
-    deadline = time.clock_gettime(time.CLOCK_BOOTTIME) + window_seconds() if args.lock else None
     watched = watch_process(pam_pid)
     conn = connect()
-    conn.sendall(f"WAIT\t{pam_id(pam_pid)}\t{args.user}\t{describe(pam_pid)}\n".encode())
+    kind = "lock" if args.lock else "prompt"
+    conn.sendall(f"WAIT\t{pam_id(pam_pid)}\t{args.user}\t{kind}\t{describe(pam_pid)}\n".encode())
     lines = Lines(conn)
-    if lines.next() != "WAITING":
+    fields = lines.next().split("\t")
+    if fields[0] == "EXPIRED":
+        return 2
+    if fields[0] != "WAITING":
         return 1
+    deadline = None
+    if args.lock:
+        # The service bounds the lock's window, from its first check; the lock
+        # offers the face only once it reads that this check waits.
+        deadline = boottime() + float(fields[1])
+        print(ARMED_MESSAGE, flush=True)
     conn.settimeout(None)
 
     if args.detach:
@@ -461,7 +522,7 @@ def wait(args):
         if not lines.pending():
             timeout = 1.0
             if deadline is not None:
-                left = deadline - time.clock_gettime(time.CLOCK_BOOTTIME)
+                left = deadline - boottime()
                 if left <= 0:
                     return 2
                 timeout = min(timeout, left)
@@ -474,7 +535,7 @@ def wait(args):
                 continue
         fields = lines.next().split("\t")
         if fields[0] == "KEY":
-            if deadline is not None and time.clock_gettime(time.CLOCK_BOOTTIME) >= deadline:
+            if deadline is not None and boottime() >= deadline:
                 return 2
             if tty is not None:
                 clear_and_submit(tty)
@@ -484,6 +545,11 @@ def wait(args):
                 os.write(tty, f"\r\n{REFUSED_MESSAGE}: {', '.join(fields[1:])}\r\n".encode())
             if args.lock:
                 print(REFUSED_MESSAGE, flush=True)
+        elif fields[0] == "LOCKED":
+            if tty is not None:
+                os.write(tty, f"\r\n{LOCKED_MESSAGE}\r\n".encode())
+        elif fields[0] == "EXPIRED":
+            return 2
         elif fields[0] != "WAITING":
             return 1
 

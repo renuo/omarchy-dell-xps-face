@@ -22,10 +22,11 @@ me=$(id -un)
 mkdir -p "$test_tmp/dev/input" "$test_tmp/sys/class/input" "$test_tmp/bin"
 
 # The service names root's socket, the kernel's input trees, the face policy
-# and the notification tools; a scratch copy retargets each, and idles out
-# after a second instead of thirty.
+# and the notification tools; a scratch copy retargets each, idles out after a
+# second instead of thirty, and gives the key back from the lock after a second.
 for literal in 'SOCKET_PATH = "/run/omarchy-face-key.sock"' 'INPUT_DIR = "/dev/input"' 'INPUT_SYSFS = "/sys/class/input"' \
-  'FACE_CONF = "/etc/omarchy/face.conf"' 'SETPRIV = "/usr/bin/setpriv"' 'NOTIFY = "/usr/bin/omarchy-notification-send"' 'IDLE_EXIT_S = 30'; do
+  'FACE_CONF = "/etc/omarchy/face.conf"' 'SETPRIV = "/usr/bin/setpriv"' 'NOTIFY = "/usr/bin/omarchy-notification-send"' 'IDLE_EXIT_S = 30' \
+  'LOCK_GRACE_S = 20'; do
   (( $(grep -Fxc "$literal" "$key") == 1 )) || fail "the service names $literal exactly once"
 done
 sed -e "s|^SOCKET_PATH = .*|SOCKET_PATH = \"$test_tmp/key.sock\"|" \
@@ -33,7 +34,8 @@ sed -e "s|^SOCKET_PATH = .*|SOCKET_PATH = \"$test_tmp/key.sock\"|" \
   -e "s|^INPUT_SYSFS = .*|INPUT_SYSFS = \"$test_tmp/sys/class/input\"|" \
   -e "s|^FACE_CONF = .*|FACE_CONF = \"$test_tmp/face.conf\"|" \
   -e "s|^SETPRIV = .*|SETPRIV = \"$test_tmp/bin/setpriv\"|" \
-  -e "s|^IDLE_EXIT_S = .*|IDLE_EXIT_S = 1|" "$key" >"$copy"
+  -e "s|^IDLE_EXIT_S = .*|IDLE_EXIT_S = 1|" \
+  -e "s|^LOCK_GRACE_S = .*|LOCK_GRACE_S = 1|" "$key" >"$copy"
 pass "the service names its fixed paths once each, and the test drives a retargeted copy"
 
 # The service hands the notifier a clean environment, so the stub logs to a
@@ -223,6 +225,114 @@ for kill, typed in ((b"\x15", [b"\x15", b"\n"]), (b"\0", [b"\n"])):
 PY
 pass "the lock's window, the requester's name and sudo's terminal answer are computed as intended"
 
+# The lock's policy, against a clock of the test's own: while the lock screen
+# waits, and for a grace after its check last waited, the key is the lock's
+# alone, since nothing else is on screen; the lock's window runs from the first
+# check root saw, not from each check that waits again.
+python3 - <<'PY' || fail "the lock screen holds the key and its window"
+import os, sys
+exec(open(os.environ["TEST_LOAD"]).read())
+
+def check(condition, description):
+    if not condition:
+        print(f"not ok - {description}", file=sys.stderr)
+        sys.exit(1)
+
+clock = [1000.0]
+key.boottime = lambda: clock[0]
+key.window_seconds = lambda: 60
+key.LOCK_GRACE_S = 20
+key.log = lambda message: None
+
+class Conn:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+
+    def sendall(self, data):
+        self.sent.append(data.decode().rstrip("\n"))
+
+    def fileno(self):
+        return -1
+
+    def close(self):
+        self.closed = True
+
+# A pipe stands in for the listener, so this runs where Unix sockets cannot.
+class Listener:
+    def __init__(self):
+        self.fd, _ = os.pipe()
+
+    def setblocking(self, flag):
+        pass
+
+    def fileno(self):
+        return self.fd
+
+server = key.Server(Listener())
+server.open_keyboards = lambda: None
+notified = []
+server.notify = lambda waiting: notified.append(len(waiting))
+
+def wait(kind, pam):
+    conn = Conn()
+    server.buffers[conn] = b""
+    server.handle(conn, ["WAIT", pam, "alice", kind, f"{kind} {pam}"])
+    return conn
+
+def left(conn):
+    fields = conn.sent[0].split("\t")
+    return fields[0] == "WAITING" and len(fields) == 2 and float(fields[1])
+
+sudo = wait("prompt", "1:1")
+check(sudo.sent == ["WAITING"], "a prompt registers without a window")
+server.key_pressed()
+check(sudo.sent[-1] == "KEY" and "1:1" in server.pressed, "with no lock about, the press releases the one waiting prompt")
+
+lock = wait("lock", "2:2")
+check(left(lock) == 60, "the lock's first check gets the whole window")
+sudo = wait("prompt", "3:3")
+server.key_pressed()
+check(lock.sent[-1] == "KEY", "with the lock waiting, the press goes to the lock")
+check(sudo.sent[-1] == "LOCKED" and not sudo.closed and "3:3" not in server.pressed,
+      "a prompt waiting beside the lock gets no press and keeps waiting")
+
+clock[0] += 19
+server.key_pressed()
+check(sudo.sent[-1] == "LOCKED" and "3:3" not in server.pressed,
+      "within the grace after the lock's check, a lone prompt still gets no press")
+clock[0] += 2
+server.key_pressed()
+check(sudo.sent[-1] == "KEY" and "3:3" in server.pressed, "once the grace has passed, the key serves prompts again")
+
+clock[0] = 2000.0
+first = wait("lock", "4:4")
+check(left(first) == 60, "a new lock's check gets the whole window")
+clock[0] += 30
+server.close(first)
+clock[0] += 5
+again = wait("lock", "5:5")
+check(left(again) == 25, "a check that waits again within the grace keeps the lock's window, not a fresh one")
+clock[0] += 26
+server.key_pressed()
+check(again.sent[-1] == "EXPIRED" and again.closed and "5:5" not in server.pressed,
+      "past the lock's window, its check gets no press")
+late = wait("lock", "6:6")
+check(late.sent == ["EXPIRED"] and late.closed, "a check registering past the window is turned away")
+clock[0] += 21
+fresh = wait("lock", "7:7")
+check(left(fresh) == 60, "after the grace, the next lock's window starts afresh")
+
+other = wait("lock", "8:8")
+sudo = wait("prompt", "9:9")
+server.key_pressed()
+check(fresh.sent[-1].startswith("CONFLICT") and other.sent[-1].startswith("CONFLICT") and not fresh.closed and not other.closed,
+      "two checks claiming the lock both keep waiting and are told why")
+check(sudo.sent[-1] == "LOCKED", "the prompt beside them gets nothing either")
+check(notified == [2], "the user is told which two waited")
+PY
+pass "while the lock screen waits for the key, and a grace after, the key is the lock's, and its window runs from its first check"
+
 # The service speaks over a Unix socket; a sandbox without them cannot run it.
 if ! python3 -c 'import socket; socket.socket(socket.AF_UNIX).close()' 2>/dev/null; then
   skip "Unix sockets are unavailable here; the service itself is not exercised"
@@ -299,15 +409,13 @@ prompt
 f=$prompt_pid
 waiter "$e"
 we=$waiter_pid
-waiter "$f" --lock
+waiter "$f"
 wf=$waiter_pid
 until_true 30 logged_at_least 'waits for the key' $((waits + 2)) || fail "both prompts wait" "$(cat "$service_log")"
 event 1
 until_true 30 logged_at_least 'key refused' 1 || fail "the press is refused" "$(cat "$service_log")"
 { running "$we" && running "$wf"; } || fail "a press with two prompts waiting releases neither, and both keep waiting" "$(cat "$service_log")"
 key_take "$e" && fail "neither of two waiting prompts may take the press"
-until_true 30 grep -qxF "Face refused: another program is waiting for the Copilot key too" "$test_tmp/waiter-$f" ||
-  fail "the lock screen is told why its face was refused" "$(cat "$test_tmp/waiter-$f")"
 until_true 30 grep -q 'Face scan refused' "$log" || fail "the user is notified" "$(cat "$log")"
 grep -q "setpriv --reuid=$(id -u) --regid=$(id -g) --init-groups /usr/bin/omarchy-notification-send -u critical" "$log" ||
   fail "the notification runs as the user" "$(cat "$log")"
@@ -337,17 +445,48 @@ prompt
 status=0
 timeout 5 bash -c "python3 '$copy' wait --lock --pam-pid $prompt_pid --user $me | true" || status=$?
 (( status != 124 )) || fail "a lock prompt whose conversation closed its end stops waiting"
-prompt
-python3 - "$prompt_pid" "$me" <<'PY' || fail "a lock prompt stops waiting once the window since locking closes"
-import os, time
-exec(open(os.environ["TEST_LOAD"]).read())
-key.window_seconds = lambda: 0.5
-start = time.monotonic()
-status = key.main(["wait", "--lock", "--pam-pid", sys.argv[1], "--user", sys.argv[2]])
-sys.exit(0 if status == 2 and time.monotonic() - start < 3 else 1)
-PY
-pass "the lock screen's prompt stops waiting when its PAM conversation goes away or its window closes"
 
+prompt
+p=$prompt_pid
+waiter "$p"
+wp=$waiter_pid
+prompt
+l=$prompt_pid
+waiter "$l" --lock
+wl=$waiter_pid
+until_true 30 grep -qxF "Waiting for the Copilot key" "$test_tmp/waiter-$l" ||
+  fail "the lock's check says once root registered it" "$(cat "$test_tmp/waiter-$l" "$service_log")"
+event 1
+exited_with "$wl" 0 || fail "the press goes to the lock screen's check" "$(cat "$test_tmp/waiter-$l" "$service_log")"
+event 1
+sleep 0.3
+running "$wp" || fail "right after the lock's check, a press does not release the prompt beside it" "$(cat "$service_log")"
+key_take "$p" && fail "a prompt beside the lock never gets a press"
+until_true 30 logged_at_least 'the lock screen holds the key' 1 || fail "the refused press is logged" "$(cat "$service_log")"
+sleep 1.2
+event 1
+exited_with "$wp" 0 || fail "once the lock's grace has passed, the key serves the prompt again" "$(cat "$service_log")"
+pass "the lock screen's check says when it waits, takes the press over any prompt, and keeps it for a grace after"
+
+prompt
+q=$prompt_pid
+prompt
+s=$prompt_pid
+waiter "$q" --lock
+wq=$waiter_pid
+waiter "$s" --lock
+ws=$waiter_pid
+until_true 30 grep -qxF "Waiting for the Copilot key" "$test_tmp/waiter-$s" || fail "both checks wait" "$(cat "$service_log")"
+until_true 30 grep -qxF "Waiting for the Copilot key" "$test_tmp/waiter-$q" || fail "both checks wait" "$(cat "$service_log")"
+event 1
+until_true 30 grep -qxF "Face refused: another program is waiting for the Copilot key too" "$test_tmp/waiter-$q" ||
+  fail "the lock screen is told why its face was refused" "$(cat "$test_tmp/waiter-$q")"
+{ running "$wq" && running "$ws"; } || fail "two checks claiming the lock both keep waiting"
+kill "$s"
+exited_with "$ws" 1 || fail "a check whose conversation ended stops waiting"
+event 1
+exited_with "$wq" 0 || fail "once one check is left, the key releases it" "$(cat "$service_log")"
+pass "two checks claiming the lock screen get no press and are told why"
 
 until_true 100 gone "$service" || fail "the service exits once nothing has waited for a while"
 pass "the service idles out, so it only runs while a prompt offers the face"

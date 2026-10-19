@@ -18,6 +18,10 @@ lock_grant=/etc/sudoers.d/omarchy-face-match
 key_socket=/etc/systemd/system/omarchy-face-key.socket
 key_service=/etc/systemd/system/omarchy-face-key.service
 face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
+# Modules that wait on their own before the password prompt. The face rides on
+# that prompt, so it goes below them: a typed password then reaches pam_unix
+# without waiting for a finger or a security key first.
+waiting_modules='pam_(fprintd|u2f)[.]so'
 
 # Files the setup owns whole ship in the checkout's default/, so an Omarchy
 # update reaches them; the setup copies them root-owned into place.
@@ -80,21 +84,24 @@ face_block() {
   echo "auth      sufficient $(face_asking_line)"
 }
 
-# True when the file carries the block exactly: contiguous and in order. The
-# block travels through the environment, where awk interprets nothing.
+# True when the file carries the block exactly, contiguous and in order, with
+# no waiting module below it. The block travels through the environment, where
+# awk interprets nothing.
 stack_has_block() {
   local block
 
   block=$(face_block)
   [[ -f $1 ]] || return 1
-  BLOCK="$block" awk '
+  BLOCK="$block" WAITING="$waiting_modules" awk '
     { lines[NR] = $0 }
     END {
       n = split(ENVIRON["BLOCK"], wanted, "\n")
       for (i = 1; i + n - 1 <= NR; i++) {
         hit = 1
         for (j = 1; j <= n; j++) if (lines[i + j - 1] != wanted[j]) { hit = 0; break }
-        if (hit) exit 0
+        if (!hit) continue
+        for (k = i + n; k <= NR; k++) if (lines[k] ~ ENVIRON["WAITING"]) exit 1
+        exit 0
       }
       exit 1
     }' "$1"
@@ -108,8 +115,10 @@ strip_face_lines() {
     -e "\\%$face_marker%d" "$1"
 }
 
+# The block goes on top, like fingerprint's and FIDO2's lines, or directly
+# below the last module that waits on its own.
 configure_stack() {
-  local file=$1 label=$2 line
+  local file=$1 label=$2 line below
   local inserts=()
 
   if stack_has_block "$file"; then
@@ -119,8 +128,13 @@ configure_stack() {
   if grep -Eq -- "$face_marker" "$file"; then
     strip_face_lines "$file"
   fi
+  below=$(grep -nE -- "$waiting_modules" "$file" | tail -n 1 | cut -d: -f1)
   while IFS= read -r line; do
-    inserts+=(-e "1i $line")
+    if [[ -n $below ]]; then
+      inserts+=(-e "${below}a $line")
+    else
+      inserts+=(-e "1i $line")
+    fi
   done < <(face_block)
   sudo sed -i "${inserts[@]}" "$file"
 }

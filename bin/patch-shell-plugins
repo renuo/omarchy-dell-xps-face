@@ -39,12 +39,14 @@ var ATTEMPT_TIMEOUT_MS = 15000
 // stays readable and a failing helper cannot spin.
 var REARM_DELAY_MS = 1500
 
-// Lines on the face check's conversation: omarchy-face-match prints the first
-// when the key starts a scan, omarchy-face-key the second when another
-// program waited for the key at the same time. Howdy tells a face it does not
-// know only by running out of time, and pam_exec turns that, like every
-// refusal, into a system error, so the helper's third line is what tells a
-// stranger from a broken camera.
+// Lines on the face check's conversation: omarchy-face-key prints the first
+// once root holds the check, and the field offers the face only from then on;
+// omarchy-face-match prints the second when the key starts a scan, and
+// omarchy-face-key the third when another program waited for the key at the
+// same time. Howdy tells a face it does not know only by running out of time,
+// and pam_exec turns that, like every refusal, into a system error, so the
+// helper's last line is what tells a stranger from a broken camera.
+var ARMED_MESSAGE = "Waiting for the Copilot key"
 var SCAN_MESSAGE = "Scanning face\u2026"
 var REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
 var NO_MATCH_MESSAGE = "Face detection timeout reached"
@@ -88,6 +90,12 @@ function faceState(configured, attemptsUsed, expired, policy) {
   return "offered"
 }
 
+// What the field shows: an offer needs a check root holds, or a scan running.
+function viewState(state, armed, scanning) {
+  if (state === "offered" && !armed && !scanning) return ""
+  return state
+}
+
 function placeholderText(state, t) {
   if (state === "offered") return t("lock.faceOrPassword")
   if (state === "exhausted") return t("lock.passwordFaceFailed")
@@ -104,6 +112,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
     REARM_DELAY_MS: REARM_DELAY_MS,
+    ARMED_MESSAGE: ARMED_MESSAGE,
     SCAN_MESSAGE: SCAN_MESSAGE,
     REFUSED_MESSAGE: REFUSED_MESSAGE,
     NO_MATCH_MESSAGE: NO_MATCH_MESSAGE,
@@ -113,6 +122,7 @@ if (typeof module !== "undefined") {
     parsePolicy: parsePolicy,
     windowExpired: windowExpired,
     faceState: faceState,
+    viewState: viewState,
     placeholderText: placeholderText,
     noMatchFollowUp: noMatchFollowUp
   }
@@ -134,11 +144,7 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
 
   function armFace() {
     if (!lockRequested || !sessionLock.secure || facePam.active) return
-    if (!facePam.start()) {
-      logEvent("face-start-failed")
-      return
-    }
-    logEvent("face-armed")
+    if (!facePam.start()) logEvent("face-start-failed")
   }
 
   function noteFaceMessage(message) {
@@ -156,6 +162,9 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
       faceAbortTimer.restart()
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
+    } else if (message === FaceModel.ARMED_MESSAGE) {
+      faceArmed = true
+      logEvent("face-armed")
     } else if (message === FaceModel.NO_MATCH_MESSAGE) {
       if (faceAuthenticating) faceNoMatch = true
     } else if (message === FaceModel.REFUSED_MESSAGE) {
@@ -183,19 +192,25 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
     if (facePam.active) facePam.abort()
     var scanning = faceAuthenticating
     faceAuthenticating = false
+    faceArmed = false
     if (event) logEvent(event)
     if (scanning && message && lockRequested) failureMessage = message
   }
 
-  // A check that ends without a scan (its window closed, or the key service
-  // was unavailable) is no attempt; the next sync arms it again if it may.
+  // A check that ends without a scan (its window closed, its conversation
+  // went away, or the key service was unavailable) is no attempt. One root
+  // held waits again after a pause; one that never registered is left to the
+  // periodic sync, so a failing helper cannot spin.
   function handleFaceFinished(result) {
     faceAbortTimer.stop()
     var scanned = faceAuthenticating
+    var armed = faceArmed
     faceAuthenticating = false
+    faceArmed = false
     if (!lockRequested) return
     if (!scanned) {
       logEvent("face-check-ended")
+      if (armed) faceRearmTimer.restart()
       return
     }
     if (result === PamResult.Success) {
@@ -215,8 +230,10 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
 
   function handleFaceError() {
     var scanning = faceAuthenticating
+    var armed = faceArmed
     if (!scanning || !faceNoMatch) {
       settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
+      if (armed && lockRequested) faceRearmTimer.restart()
       return
     }
     settleFaceAttempt("face-no-match")
@@ -392,10 +409,11 @@ def patch_lock(src, dst):
     service = "\n".join(lines)
     service = once(service, "  property bool fingerprintConfigured: false\n",
         "  property bool fingerprintConfigured: false\n  property bool faceConfigured: false\n  property bool faceAuthenticating: false\n"
-        "  property bool faceNoMatch: false\n"
+        "  property bool faceArmed: false\n  property bool faceNoMatch: false\n"
         "  property int faceAttempts: 0\n  property double faceLockedAtMs: 0\n  property bool faceWindowExpired: true\n"
         "  property var facePolicy: FaceModel.parsePolicy(\"\")\n"
-        "  readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)\n")
+        "  readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)\n"
+        "  readonly property string faceViewState: FaceModel.viewState(faceState, faceArmed, faceAuthenticating)\n")
     service = once(service, "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating\n",
         "readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating || faceAuthenticating\n")
     service = once(service, "    if (passwordPam.active) passwordPam.abort()\n    if (fingerprintPam.active) fingerprintPam.abort()\n",
@@ -419,7 +437,7 @@ def patch_lock(src, dst):
     service = once(service, "        root.startFingerprint()\n", "        root.startFingerprint()\n        root.syncFace()\n")
     service = once(service, "  function handleFingerprintFinished(result) {\n", FACE_FUNCS + "  function handleFingerprintFinished(result) {\n")
     service = sub_once(service, r"^(        )fingerprintConfigured: root\.fingerprintConfigured.*\n",
-        lambda m: m.group(0) + m.group(1) + "faceState: root.faceState\n" + m.group(1) + "faceAuthenticating: root.faceAuthenticating\n")
+        lambda m: m.group(0) + m.group(1) + "faceState: root.faceViewState\n" + m.group(1) + "faceAuthenticating: root.faceAuthenticating\n")
     service = sub_once(service, r"^(      )fingerprintConfigured: root\.fingerprintConfigured.*\n",
         lambda m: m.group(0) + m.group(1) + "faceState: root.faceConfigured ? \"offered\" : \"\"\n" + m.group(1) + "faceAuthenticating: false\n")
     i = service.index("    id: fingerprintPam\n")
@@ -429,7 +447,7 @@ def patch_lock(src, dst):
     service = once(service, '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n', FACE_FILEVIEW + '  FileView {\n    path: "/etc/pam.d/omarchy-lock-password"\n')
     service = once(service, "        fingerprint: root.fingerprintConfigured,\n",
         "        fingerprint: root.fingerprintConfigured,\n        face: root.faceConfigured,\n        faceState: root.faceState,\n"
-        "        faceAttempts: root.faceAttempts,\n        faceArmed: facePam.active,\n        faceAuthenticating: root.faceAuthenticating,\n")
+        "        faceAttempts: root.faceAttempts,\n        faceArmed: root.faceArmed,\n        faceAuthenticating: root.faceAuthenticating,\n")
     service = once(service, "  function armBlankTimer() {\n",
         "  function armBlankTimer() {\n"
         "    // A face scan holds the display up, since blanking would cut it short\n"

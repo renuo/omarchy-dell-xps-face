@@ -27,12 +27,14 @@ Item {
   property bool fingerprintConfigured: false
   property bool faceConfigured: false
   property bool faceAuthenticating: false
+  property bool faceArmed: false
   property bool faceNoMatch: false
   property int faceAttempts: 0
   property double faceLockedAtMs: 0
   property bool faceWindowExpired: true
   property var facePolicy: FaceModel.parsePolicy("")
   readonly property string faceState: FaceModel.faceState(faceConfigured, faceAttempts, faceWindowExpired, facePolicy)
+  readonly property string faceViewState: FaceModel.viewState(faceState, faceArmed, faceAuthenticating)
   property int fingerprintUnreachedStreak: 0
   property bool fingerprintAttemptReachedDevice: false
   property bool fingerprintAttemptFastError: false
@@ -530,11 +532,7 @@ Item {
 
   function armFace() {
     if (!lockRequested || !sessionLock.secure || facePam.active) return
-    if (!facePam.start()) {
-      logEvent("face-start-failed")
-      return
-    }
-    logEvent("face-armed")
+    if (!facePam.start()) logEvent("face-start-failed")
   }
 
   function noteFaceMessage(message) {
@@ -552,6 +550,9 @@ Item {
       faceAbortTimer.restart()
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
       if (displaysBlank) runWake()
+    } else if (message === FaceModel.ARMED_MESSAGE) {
+      faceArmed = true
+      logEvent("face-armed")
     } else if (message === FaceModel.NO_MATCH_MESSAGE) {
       if (faceAuthenticating) faceNoMatch = true
     } else if (message === FaceModel.REFUSED_MESSAGE) {
@@ -579,19 +580,25 @@ Item {
     if (facePam.active) facePam.abort()
     var scanning = faceAuthenticating
     faceAuthenticating = false
+    faceArmed = false
     if (event) logEvent(event)
     if (scanning && message && lockRequested) failureMessage = message
   }
 
-  // A check that ends without a scan (its window closed, or the key service
-  // was unavailable) is no attempt; the next sync arms it again if it may.
+  // A check that ends without a scan (its window closed, its conversation
+  // went away, or the key service was unavailable) is no attempt. One root
+  // held waits again after a pause; one that never registered is left to the
+  // periodic sync, so a failing helper cannot spin.
   function handleFaceFinished(result) {
     faceAbortTimer.stop()
     var scanned = faceAuthenticating
+    var armed = faceArmed
     faceAuthenticating = false
+    faceArmed = false
     if (!lockRequested) return
     if (!scanned) {
       logEvent("face-check-ended")
+      if (armed) faceRearmTimer.restart()
       return
     }
     if (result === PamResult.Success) {
@@ -611,8 +618,10 @@ Item {
 
   function handleFaceError() {
     var scanning = faceAuthenticating
+    var armed = faceArmed
     if (!scanning || !faceNoMatch) {
       settleFaceAttempt("face-error", I18n.t("lock.faceUnavailable"))
+      if (armed && lockRequested) faceRearmTimer.restart()
       return
     }
     settleFaceAttempt("face-no-match")
@@ -694,7 +703,7 @@ Item {
         videoPosterPath: root.videoPosterPath
         backgroundVersion: root.backgroundVersion
         fingerprintConfigured: root.fingerprintConfigured || root.fingerprintUnavailable
-        faceState: root.faceState
+        faceState: root.faceViewState
         faceAuthenticating: root.faceAuthenticating
         fingerprintUnavailable: root.fingerprintUnavailable
         authenticatingPassword: root.authenticatingPassword
@@ -1191,7 +1200,7 @@ Item {
         face: root.faceConfigured,
         faceState: root.faceState,
         faceAttempts: root.faceAttempts,
-        faceArmed: facePam.active,
+        faceArmed: root.faceArmed,
         faceAuthenticating: root.faceAuthenticating,
         fingerprintUnavailable: root.fingerprintUnavailable,
         authenticating: root.authenticating,

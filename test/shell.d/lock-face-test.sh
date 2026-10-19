@@ -19,6 +19,7 @@ const helper = fs.readFileSync(path.join(root, 'bin/omarchy-face-match'), 'utf8'
 const key = fs.readFileSync(path.join(root, 'bin/omarchy-face-key'), 'utf8')
 assert(helper.includes(`echo "${model.SCAN_MESSAGE}"`), 'the helper announces a scan with the line the lock waits for')
 assert(key.includes(`REFUSED_MESSAGE = "${model.REFUSED_MESSAGE}"`), 'the key service refuses with the line the lock recognises')
+assert(key.includes(`ARMED_MESSAGE = "${model.ARMED_MESSAGE}"`), "the key service says the lock's check waits with the line the lock offers the face on")
 // Howdy tells a face it does not know only by running out of time, and
 // pam_exec turns that, like any refusal, into a system error.
 assert(/\n  11\)\n    echo "([^"]*)"\n/.exec(helper)[1] === model.NO_MATCH_MESSAGE, "the helper reports Howdy's timeout with the line the lock takes for a stranger")
@@ -46,6 +47,15 @@ assertEqual(model.faceState(true, 1, false, policy), 'offered', 'a scan left kee
 assertEqual(model.faceState(true, 2, false, policy), 'exhausted', 'the spent scans end the offer')
 assertEqual(model.faceState(true, 2, true, policy), 'exhausted', 'spent scans are what the lock reports when both apply')
 assertEqual(model.faceState(true, 0, true, policy), 'expired', 'the closed window ends the offer')
+
+// The field offers the face only while root holds a check for the key, so a
+// check that ended, however it ended, never leaves an offer with nothing behind it.
+assertEqual(model.viewState('offered', false, false), '', 'an offer without a registered check shows the plain password field')
+assertEqual(model.viewState('offered', true, false), 'offered', 'a registered check shows the offer')
+assertEqual(model.viewState('offered', false, true), 'offered', 'a running scan keeps the offer shown')
+for (const state of ['exhausted', 'expired', '']) {
+  assertEqual(model.viewState(state, false, false), state, `"${state || 'unconfigured'}" shows as it is, check or not`)
+}
 
 // The model names catalog keys; English comes from the catalog, and a key
 // the face did not add, like upstream's own lock.enterPassword, stays upstream's.
@@ -103,10 +113,23 @@ awk '/function runBlank\(\) \{/{f=1} f && /if \(faceAuthenticating\) \{/{found=1
 function_has handleFaceFinished 'if (!scanned) {' || fail "a check that ends without a scan is no attempt"
 { function_has handleFaceFinished 'rejectFace()' && function_has handleFaceFinished 'faceRearmTimer.restart()'; } ||
   fail "a miss is reported in the field and the check waits again after a pause"
+grep -q '  property bool faceArmed: false' "$service" || fail "the lock tracks whether root holds its check"
+function_has noteFaceMessage '} else if (message === FaceModel.ARMED_MESSAGE) {' || fail "the key service's line marks the check as registered"
+{ function_has noteFaceMessage 'faceArmed = true' && function_has noteFaceMessage 'logEvent("face-armed")'; } ||
+  fail "the registered check is noted and logged"
+! function_has armFace 'logEvent("face-armed")' || fail "starting the conversation is not yet a registered check"
+{ function_has settleFaceAttempt 'faceArmed = false' && function_has handleFaceFinished 'faceArmed = false'; } ||
+  fail "a check that ends or is withdrawn is no longer registered"
+awk '/function handleFaceFinished\(result\) \{/{f=1} f && /if \(!scanned\) \{/{s=1} s && /if \(armed\) faceRearmTimer\.restart\(\)/{found=1} f && /^  \}/{exit} END{exit !found}' "$service" ||
+  fail "a registered check that ends without a scan waits again after a pause"
+function_has handleFaceError 'if (armed && lockRequested) faceRearmTimer.restart()' ||
+  fail "a registered check that fails without a scan waits again after a pause"
+grep -q 'readonly property string faceViewState: FaceModel.viewState(faceState, faceArmed, faceAuthenticating)' "$service" ||
+  fail "the field's offer follows the registered check"
 grep -q 'interval: FaceModel.REARM_DELAY_MS' "$service" || fail "the pause comes from the model"
 grep -Pzo 'interval: 30000\s*repeat: true\s*running: root\.lockRequested && root\.faceConfigured\s*onTriggered: root\.syncFace\(\)' "$service" >/dev/null ||
   fail "the offer is re-checked while the display stays on"
-{ grep -q 'face: root.faceConfigured' "$service" && grep -q 'faceArmed: facePam.active' "$service"; } || fail "the lock status reports enrollment and the waiting check"
+{ grep -q 'face: root.faceConfigured' "$service" && grep -q 'faceArmed: root.faceArmed' "$service"; } || fail "the lock status reports enrollment and the registered check"
 grep -qF 'Commons.I18n.t("lock.scanningFace")' "$view" || fail "a running scan is shown in the field"
 { grep -q 'id: faceIcon' "$view" && grep -q 'Math.max(root.fingerprintReserve, root.faceReserve)' "$view"; } || fail "the view shows a face hint and keeps the dots clear of it"
 pass "the lock keeps a face check waiting for the Copilot key while it offers the face and never scans on its own"
@@ -153,7 +176,7 @@ grep -Pzo 'onFaceAuthenticatingChanged: \{\s*if \(!lockRequested\) return\s*if \
 function_has armBlankTimer 'if (faceAuthenticating) return' || fail "activity during a scan does not re-arm the idle blank under it"
 grep -q 'if (root.lockRequested && !root.authenticatingPassword) root.runBlank()' "$service" || fail "upstream's gate on the idle blank stays as it is"
 grep -q 'faceState: root.faceState,' "$service" || fail "the lock status reports what it offers"
-grep -q 'faceState: root.faceState$' "$service" || fail "the locked view follows the lock's offer"
+grep -q 'faceState: root.faceViewState$' "$service" || fail "the locked view follows the lock's offer and its registered check"
 pass "each lock offers the face for a bounded number of scans within a bounded time"
 
 grep -q 'import "FaceModel.js" as FaceModel' "$view" || fail "the view reads its texts from the model"

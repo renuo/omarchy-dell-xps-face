@@ -12,12 +12,14 @@ var ATTEMPT_TIMEOUT_MS = 15000
 // stays readable and a failing helper cannot spin.
 var REARM_DELAY_MS = 1500
 
-// Lines on the face check's conversation: omarchy-face-match prints the first
-// when the key starts a scan, omarchy-face-key the second when another
-// program waited for the key at the same time. Howdy tells a face it does not
-// know only by running out of time, and pam_exec turns that, like every
-// refusal, into a system error, so the helper's third line is what tells a
-// stranger from a broken camera.
+// Lines on the face check's conversation: omarchy-face-key prints the first
+// once root holds the check, and the field offers the face only from then on;
+// omarchy-face-match prints the second when the key starts a scan, and
+// omarchy-face-key the third when another program waited for the key at the
+// same time. Howdy tells a face it does not know only by running out of time,
+// and pam_exec turns that, like every refusal, into a system error, so the
+// helper's last line is what tells a stranger from a broken camera.
+var ARMED_MESSAGE = "Waiting for the Copilot key"
 var SCAN_MESSAGE = "Scanning face…"
 var REFUSED_MESSAGE = "Face refused: another program is waiting for the Copilot key too"
 var NO_MATCH_MESSAGE = "Face detection timeout reached"
@@ -61,6 +63,12 @@ function faceState(configured, attemptsUsed, expired, policy) {
   return "offered"
 }
 
+// What the field shows: an offer needs a check root holds, or a scan running.
+function viewState(state, armed, scanning) {
+  if (state === "offered" && !armed && !scanning) return ""
+  return state
+}
+
 function placeholderText(state, t) {
   if (state === "offered") return t("lock.faceOrPassword")
   if (state === "exhausted") return t("lock.passwordFaceFailed")
@@ -77,6 +85,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     ATTEMPT_TIMEOUT_MS: ATTEMPT_TIMEOUT_MS,
     REARM_DELAY_MS: REARM_DELAY_MS,
+    ARMED_MESSAGE: ARMED_MESSAGE,
     SCAN_MESSAGE: SCAN_MESSAGE,
     REFUSED_MESSAGE: REFUSED_MESSAGE,
     NO_MATCH_MESSAGE: NO_MATCH_MESSAGE,
@@ -86,6 +95,7 @@ if (typeof module !== "undefined") {
     parsePolicy: parsePolicy,
     windowExpired: windowExpired,
     faceState: faceState,
+    viewState: viewState,
     placeholderText: placeholderText,
     noMatchFollowUp: noMatchFollowUp
   }
