@@ -349,7 +349,7 @@ def listening_socket():
     except FileNotFoundError:
         pass
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    umask = os.umask(0o077)
+    umask = os.umask(0o177)
     try:
         listener.bind(SOCKET_PATH)
     finally:
