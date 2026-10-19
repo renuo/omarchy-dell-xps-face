@@ -160,7 +160,7 @@ invoke_elevated() {
   local status=0
 
   : >"$log"
-  TEST_LOG="$log" TEST_STATUS=0 TEST_KEY="${TEST_KEY-pressed}" SUDO_USER=alice PATH="$stub_bin:/usr/bin:/bin" \
+  TEST_LOG="$log" TEST_STATUS="${TEST_STATUS:-0}" TEST_KEY="${TEST_KEY-pressed}" SUDO_USER=alice PATH="$stub_bin:/usr/bin:/bin" \
     env -u PAM_USER bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -170,13 +170,20 @@ invoke_elevated || fail "the grant scans while the lock screen uses the face" "$
 grep -qE '^key wait --lock --pam-pid [0-9]+ --user alice$' "$log" || fail "the lock's scan waits for the key first" "$(cat "$log")"
 grep -qxF "python3 $seclib/howdy/compare.py alice" "$log" || fail "the grant matches SUDO_USER's face" "$(cat "$log")"
 [[ $(head -n1 "$output") == "Scanning face…" ]] || fail "the lock screen is told when the scan starts" "$(cat "$output")"
+[[ $(tail -n1 "$log") =~ ^key\ scanned\ --lock\ --pam-pid\ [0-9]+\ --status\ 0$ ]] ||
+  fail "a match is reported to the key service last, so it gives the key back at once" "$(cat "$log")"
+TEST_STATUS=11 invoke_elevated && fail "a stranger's scan fails"
+[[ $(tail -n1 "$log") =~ ^key\ scanned\ --lock\ --pam-pid\ [0-9]+\ --status\ 11$ ]] ||
+  fail "a failed scan is reported with Howdy's status" "$(cat "$log")"
 TEST_KEY=none invoke_elevated && fail "the lock's wait ending without the key fails"
 ! grep -q '^python3' "$log" || fail "the lock never scans without the key" "$(cat "$log")"
+! grep -q '^key scanned' "$log" || fail "a wait that ended without the key started no scan to report" "$(cat "$log")"
 rm "$test_tmp/omarchy-lock-face"
 invoke_elevated && fail "the grant refuses while the lock screen does not use the face"
 ! grep -q '^python3' "$log" || fail "a refused grant never reaches compare.py" "$(cat "$log")"
 grep -q 'lock screen' "$output" || fail "the refusal is explained" "$(cat "$output")"
 invoke 0 alice || fail "sudo and polkit, which run the helper through pam_exec, scan without the lock service"
+! grep -q '^key scanned' "$log" || fail "only the lock's scans are reported" "$(cat "$log")"
 pass "the sudoers grant scans only while the lock screen uses the face"
 
 # Howdy's own PAM module refuses before it scans while Howdy is disabled or
@@ -213,6 +220,7 @@ TEST_LID_AFTER_KEY=1 invoke_elevated && fail "a lid shut while the lock waited s
 grep -q '^key wait --lock' "$log" || fail "the lock waited with the lid open" "$(cat "$log")"
 ! grep -q '^python3' "$log" || fail "a lid shut while the lock waited never reaches the camera" "$(cat "$log")"
 [[ $(<"$output") != *"Scanning face"* ]] || fail "a lid shut while the lock waited starts no scan" "$(cat "$output")"
+grep -qE '^key scanned --lock --pam-pid [0-9]+ --status 1$' "$log" || fail "the scan the key would have started is reported as failed" "$(cat "$log")"
 rm -f "$test_tmp/omarchy-lock-face" "$lid"
 pass "with the lid shut, before the key or after it, no stack waits for or scans a face"
 

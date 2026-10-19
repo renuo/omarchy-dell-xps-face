@@ -23,10 +23,11 @@ mkdir -p "$test_tmp/dev/input" "$test_tmp/sys/class/input" "$test_tmp/bin"
 
 # The service names root's socket, the kernel's input trees, the face policy
 # and the notification tools; a scratch copy retargets each, idles out after a
-# second instead of thirty, and gives the key back from the lock after a second.
+# second instead of thirty, and gives the key back from the lock's scan and grace
+# after a second each.
 for literal in 'SOCKET_PATH = "/run/omarchy-face-key.sock"' 'INPUT_DIR = "/dev/input"' 'INPUT_SYSFS = "/sys/class/input"' \
   'FACE_CONF = "/etc/omarchy/face.conf"' 'SETPRIV = "/usr/bin/setpriv"' 'NOTIFY = "/usr/bin/omarchy-notification-send"' 'IDLE_EXIT_S = 30' \
-  'LOCK_GRACE_S = 20'; do
+  'LOCK_GRACE_S = 5' 'LOCK_SCAN_S = 15'; do
   (( $(grep -Fxc "$literal" "$key") == 1 )) || fail "the service names $literal exactly once"
 done
 sed -e "s|^SOCKET_PATH = .*|SOCKET_PATH = \"$test_tmp/key.sock\"|" \
@@ -35,7 +36,8 @@ sed -e "s|^SOCKET_PATH = .*|SOCKET_PATH = \"$test_tmp/key.sock\"|" \
   -e "s|^FACE_CONF = .*|FACE_CONF = \"$test_tmp/face.conf\"|" \
   -e "s|^SETPRIV = .*|SETPRIV = \"$test_tmp/bin/setpriv\"|" \
   -e "s|^IDLE_EXIT_S = .*|IDLE_EXIT_S = 1|" \
-  -e "s|^LOCK_GRACE_S = .*|LOCK_GRACE_S = 1|" "$key" >"$copy"
+  -e "s|^LOCK_GRACE_S = .*|LOCK_GRACE_S = 1|" \
+  -e "s|^LOCK_SCAN_S = .*|LOCK_SCAN_S = 1|" "$key" >"$copy"
 pass "the service names its fixed paths once each, and the test drives a retargeted copy"
 
 # The service hands the notifier a clean environment, so the stub logs to a
@@ -225,10 +227,11 @@ for kill, typed in ((b"\x15", [b"\x15", b"\n"]), (b"\0", [b"\n"])):
 PY
 pass "the lock's window, the requester's name and sudo's terminal answer are computed as intended"
 
-# The lock's policy, against a clock of the test's own: while the lock screen
-# waits, and for a grace after its check last waited, the key is the lock's
-# alone, since nothing else is on screen; the lock's window runs from the first
-# check root saw, not from each check that waits again.
+# The lock's policy, against a clock of the test's own. While the lock screen
+# waits, nothing else is on screen, so the press is the lock's; it stays the
+# lock's while the scan runs, gives way at once when the face opened the lock,
+# and otherwise holds a few seconds more, as after a password unlock or a check
+# a program ended. The lock's window runs from the first check root saw.
 python3 - <<'PY' || fail "the lock screen holds the key and its window"
 import os, sys
 exec(open(os.environ["TEST_LOAD"]).read())
@@ -238,25 +241,12 @@ def check(condition, description):
         print(f"not ok - {description}", file=sys.stderr)
         sys.exit(1)
 
-clock = [1000.0]
+clock = [0.0]
 key.boottime = lambda: clock[0]
 key.window_seconds = lambda: 60
-key.LOCK_GRACE_S = 20
+key.LOCK_GRACE_S = 5
+key.LOCK_SCAN_S = 15
 key.log = lambda message: None
-
-class Conn:
-    def __init__(self):
-        self.sent = []
-        self.closed = False
-
-    def sendall(self, data):
-        self.sent.append(data.decode().rstrip("\n"))
-
-    def fileno(self):
-        return -1
-
-    def close(self):
-        self.closed = True
 
 # A pipe stands in for the listener, so this runs where Unix sockets cannot.
 class Listener:
@@ -269,26 +259,61 @@ class Listener:
     def fileno(self):
         return self.fd
 
-server = key.Server(Listener())
-server.open_keyboards = lambda: None
-notified = []
-server.notify = lambda waiting: notified.append(len(waiting))
+class Conn:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
 
-def wait(kind, pam):
+    def sendall(self, data):
+        self.sent.append(data.decode().rstrip("\n"))
+
+    def recv(self, size):
+        return b""
+
+    def fileno(self):
+        return -1
+
+    def close(self):
+        self.closed = True
+
+notified = []
+
+def fresh():
+    global server
+    clock[0] = 1000.0
+    server = key.Server(Listener())
+    server.open_keyboards = lambda: None
+    server.notify = lambda waiting: notified.append(len(waiting))
+
+def connect():
     conn = Conn()
     server.buffers[conn] = b""
+    return conn
+
+def wait(kind, pam):
+    conn = connect()
     server.handle(conn, ["WAIT", pam, "alice", kind, f"{kind} {pam}"])
     return conn
+
+def done(pam, outcome):
+    conn = connect()
+    server.handle(conn, ["SCANNED", pam, outcome])
+    return conn.sent
 
 def left(conn):
     fields = conn.sent[0].split("\t")
     return fields[0] == "WAITING" and len(fields) == 2 and float(fields[1])
 
+def after(seconds):
+    clock[0] += seconds
+
+fresh()
 sudo = wait("prompt", "1:1")
 check(sudo.sent == ["WAITING"], "a prompt registers without a window")
 server.key_pressed()
 check(sudo.sent[-1] == "KEY" and "1:1" in server.pressed, "with no lock about, the press releases the one waiting prompt")
 
+fresh()
 lock = wait("lock", "2:2")
 check(left(lock) == 60, "the lock's first check gets the whole window")
 sudo = wait("prompt", "3:3")
@@ -296,42 +321,89 @@ server.key_pressed()
 check(lock.sent[-1] == "KEY", "with the lock waiting, the press goes to the lock")
 check(sudo.sent[-1] == "LOCKED" and not sudo.closed and "3:3" not in server.pressed,
       "a prompt waiting beside the lock gets no press and keeps waiting")
+after(3)
+server.key_pressed()
+check(sudo.sent[-1] == "LOCKED" and "3:3" not in server.pressed, "while the lock's scan runs, a lone prompt still gets no press")
+check(done("2:2", "matched") == ["OK"], "the helper reports how the lock's scan ended")
+server.key_pressed()
+check(sudo.sent[-1] == "KEY", "once the face opened the lock, the key serves prompts at once")
 
-clock[0] += 19
+fresh()
+lock = wait("lock", "4:4")
+sudo = wait("prompt", "5:5")
 server.key_pressed()
-check(sudo.sent[-1] == "LOCKED" and "3:3" not in server.pressed,
-      "within the grace after the lock's check, a lone prompt still gets no press")
-clock[0] += 2
+after(2)
+done("4:4", "failed")
+after(4)
 server.key_pressed()
-check(sudo.sent[-1] == "KEY" and "3:3" in server.pressed, "once the grace has passed, the key serves prompts again")
+check(sudo.sent[-1] == "LOCKED", "after a failed scan the key stays the lock's while its check comes back")
+again = wait("lock", "6:6")
+check(left(again) == 54, "the check that comes back keeps the lock's window")
 
-clock[0] = 2000.0
-first = wait("lock", "4:4")
-check(left(first) == 60, "a new lock's check gets the whole window")
-clock[0] += 30
-server.close(first)
-clock[0] += 5
-again = wait("lock", "5:5")
-check(left(again) == 25, "a check that waits again within the grace keeps the lock's window, not a fresh one")
-clock[0] += 26
+fresh()
+lock = wait("lock", "7:7")
+sudo = wait("prompt", "8:8")
+server.read_client(lock)
+after(4)
 server.key_pressed()
-check(again.sent[-1] == "EXPIRED" and again.closed and "5:5" not in server.pressed,
+check(sudo.sent[-1] == "LOCKED", "for a moment after the lock's check went away, as at a password unlock, a lone prompt gets no press")
+after(2)
+server.key_pressed()
+check(sudo.sent[-1] == "KEY", "a few seconds later the key serves prompts again")
+
+fresh()
+lock = wait("lock", "9:9")
+sudo = wait("prompt", "10:10")
+server.key_pressed()
+after(19)
+server.key_pressed()
+check(sudo.sent[-1] == "LOCKED", "a scan that never reports holds the key for its bound and the grace")
+after(2)
+server.key_pressed()
+check(sudo.sent[-1] == "KEY", "past that bound the key serves prompts again")
+
+# A program ends the lock's check and waits with a check of its own through
+# the lock's grant: the press goes to that check, and its match must not hand
+# the next press to the program's sudo.
+fresh()
+real = wait("lock", "11:11")
+sudo = wait("prompt", "12:12")
+server.read_client(real)
+fake = wait("lock", "13:13")
+server.key_pressed()
+check(fake.sent[-1] == "KEY", "the press goes to the one check of the lock left")
+after(1)
+done("13:13", "matched")
+server.key_pressed()
+check(sudo.sent[-1] == "LOCKED", "a match after a check of the lock went away unexplained does not free the key at once")
+after(6)
+server.key_pressed()
+check(sudo.sent[-1] == "KEY", "it frees the key only once the grace has passed")
+
+fresh()
+first = wait("lock", "14:14")
+after(59)
+again = wait("lock", "14:14")
+check(left(again) == 1, "a check asking again keeps the lock's window")
+after(2)
+server.key_pressed()
+check(again.sent[-1] == "EXPIRED" and again.closed and "14:14" not in server.pressed,
       "past the lock's window, its check gets no press")
-late = wait("lock", "6:6")
+late = wait("lock", "15:15")
 check(late.sent == ["EXPIRED"] and late.closed, "a check registering past the window is turned away")
-clock[0] += 21
-fresh = wait("lock", "7:7")
-check(left(fresh) == 60, "after the grace, the next lock's window starts afresh")
+after(6)
+fresh_check = wait("lock", "16:16")
+check(left(fresh_check) == 60, "once the lock is gone, the next lock's window starts afresh")
 
-other = wait("lock", "8:8")
-sudo = wait("prompt", "9:9")
+other = wait("lock", "17:17")
+sudo = wait("prompt", "18:18")
 server.key_pressed()
-check(fresh.sent[-1].startswith("CONFLICT") and other.sent[-1].startswith("CONFLICT") and not fresh.closed and not other.closed,
+check(fresh_check.sent[-1].startswith("CONFLICT") and other.sent[-1].startswith("CONFLICT") and not fresh_check.closed and not other.closed,
       "two checks claiming the lock both keep waiting and are told why")
 check(sudo.sent[-1] == "LOCKED", "the prompt beside them gets nothing either")
 check(notified == [2], "the user is told which two waited")
 PY
-pass "while the lock screen waits for the key, and a grace after, the key is the lock's, and its window runs from its first check"
+pass "the key is the lock's while it waits and scans, free at once after a face unlock, and a few seconds after anything else"
 
 # The service speaks over a Unix socket; a sandbox without them cannot run it.
 if ! python3 -c 'import socket; socket.socket(socket.AF_UNIX).close()' 2>/dev/null; then
@@ -447,6 +519,8 @@ timeout 5 bash -c "python3 '$copy' wait --lock --pam-pid $prompt_pid --user $me 
 (( status != 124 )) || fail "a lock prompt whose conversation closed its end stops waiting"
 [[ ! -s $test_tmp/closed.err ]] || fail "a lock prompt whose conversation closed its end leaves quietly" "$(cat "$test_tmp/closed.err")"
 
+# The closed check's grace passes first, so the next lock starts clean.
+sleep 1.2
 prompt
 p=$prompt_pid
 waiter "$p"
@@ -461,12 +535,31 @@ event 1
 exited_with "$wl" 0 || fail "the press goes to the lock screen's check" "$(cat "$test_tmp/waiter-$l" "$service_log")"
 event 1
 sleep 0.3
-running "$wp" || fail "right after the lock's check, a press does not release the prompt beside it" "$(cat "$service_log")"
+running "$wp" || fail "while the lock's scan runs, a press does not release the prompt beside it" "$(cat "$service_log")"
 until_true 30 logged_at_least 'the lock screen holds the key' 1 || fail "the refused press is logged" "$(cat "$service_log")"
+python3 "$copy" scanned --lock --pam-pid "$l" --status 0 || fail "the helper reports how the lock's scan ended"
+event 1
+exited_with "$wp" 0 || fail "once the face opened the lock, the key serves the prompt at once" "$(cat "$service_log")"
+pass "the lock screen's check says when it waits, takes the press over any prompt, and gives the key back as soon as the face opened the lock"
+
+prompt
+p=$prompt_pid
+waiter "$p"
+wp=$waiter_pid
+prompt
+l=$prompt_pid
+waiter "$l" --lock
+wl=$waiter_pid
+until_true 30 grep -qxF "Waiting for the Copilot key" "$test_tmp/waiter-$l" || fail "the lock's check waits again" "$(cat "$service_log")"
+kill "$l"
+exited_with "$wl" 1 || fail "a check whose conversation ended stops waiting"
+event 1
+sleep 0.3
+running "$wp" || fail "for a moment after the lock's check went away, a press does not release the prompt beside it" "$(cat "$service_log")"
 sleep 1.2
 event 1
-exited_with "$wp" 0 || fail "once the lock's grace has passed, the key serves the prompt again" "$(cat "$service_log")"
-pass "the lock screen's check says when it waits, takes the press over any prompt, and keeps it for a grace after"
+exited_with "$wp" 0 || fail "a moment later the key serves the prompt again" "$(cat "$service_log")"
+pass "after the lock's check went away without a scan, the key is the lock's for a moment only"
 
 prompt
 q=$prompt_pid

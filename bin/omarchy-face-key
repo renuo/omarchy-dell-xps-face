@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # omarchy:summary=Hold face scans until the Copilot key is pressed on a physical keyboard; the service behind omarchy-face-match
-# omarchy:args=<serve|wait|take|drop> [--pam-pid <pid>] [--user <name>] [--detach] [--tty] [--lock]
+# omarchy:args=<serve|wait|take|drop|scanned> [--pam-pid <pid>] [--user <name>] [--detach] [--tty] [--lock] [--status <n>]
 # omarchy:hidden=true
 """The face key behind omarchy-face-match.
 
@@ -13,11 +13,12 @@ under /devices/virtual, which this ignores. Hyprland binds the key
 (default/hypr/toggles/face-key.lua), so no window receives it and it cannot
 end up in a password.
 
-serve  the root service behind the socket, socket-activated; it reads the
-       keyboard only while a prompt waits for the key
-wait   register a prompt that offers the face, and wait for the key
-take   whether the key was pressed for this prompt; consumes the press
-drop   the prompt was answered with a password; forget it
+serve    the root service behind the socket, socket-activated; it reads the
+         keyboard only while a prompt waits for the key
+wait     register a prompt that offers the face, and wait for the key
+take     whether the key was pressed for this prompt; consumes the press
+drop     the prompt was answered with a password; forget it
+scanned  how the lock's scan ended, so the lock gives the key back
 
 One press serves exactly one waiting prompt. When more than one waits, the
 press serves none: a program waiting at the same moment must not catch a
@@ -25,10 +26,13 @@ press meant for another prompt. They all keep waiting, the user is told who
 asked, and only typing a password or cancelling ends the standoff.
 
 While the lock screen waits for the key, nothing else is on screen, so the
-press is the lock's alone; a prompt waiting meanwhile gets none. That holds
-for a grace after the lock's check last waited too, which covers its scan and
-its return, so a program cannot take the press by ending the lock's check
-just before it. The lock's window runs from the first check of that stretch.
+press is the lock's alone; a prompt waiting meanwhile gets none. The lock keeps
+the key while the scan the press started runs, and gives it back at once when
+the face opened the lock. Otherwise it keeps it for a grace more, which covers
+its check's return after a miss, and a press already on its way when the check
+went away: root cannot tell a password unlock from a program ending the lock's
+check to catch that press. The lock's window runs from the first check of that
+stretch.
 """
 
 import argparse
@@ -61,7 +65,10 @@ EVENT = struct.Struct("llHHi")
 
 PRESS_VALID_S = 5
 IDLE_EXIT_S = 30
-LOCK_GRACE_S = 20
+LOCK_GRACE_S = 5
+# The lock screen gives up on a scan after this long (ATTEMPT_TIMEOUT_MS in
+# shell/plugins/lock/FaceModel.js), so a scan never reported holds no longer.
+LOCK_SCAN_S = 15
 DEFAULT_WINDOW_MINUTES = 60
 
 # The lock screen matches these lines (shell/plugins/lock/FaceModel.js).
@@ -120,6 +127,8 @@ class Server:
         self.children = []
         self.lock_since = None
         self.lock_left = None
+        self.lock_scans = {}
+        self.lock_unexplained = False
         self.last_activity = time.monotonic()
 
     def run(self):
@@ -135,6 +144,7 @@ class Server:
             self.children = [child for child in self.children if child.poll() is None]
             now = time.monotonic()
             self.pressed = {pid: at for pid, at in self.pressed.items() if now - at <= PRESS_VALID_S}
+            self.lock_scans = {pid: at for pid, at in self.lock_scans.items() if self.scan_holds(at)}
             if self.buffers or self.waiters or self.pressed or self.lock_holds_key():
                 self.last_activity = now
             elif now - self.last_activity > IDLE_EXIT_S:
@@ -162,6 +172,10 @@ class Server:
         except OSError:
             data = b""
         if not data:
+            # A lock check whose conversation went away without a scan: the
+            # lock unlocked with a password, or a program ended the check.
+            if self.waiters.get(conn, (None, None, None))[2] == "lock":
+                self.lock_unexplained = True
             self.close(conn)
             return
         if conn in self.waiters:
@@ -184,6 +198,7 @@ class Server:
             if fields[3] == "lock":
                 if not self.lock_holds_key():
                     self.lock_since = boottime()
+                    self.lock_unexplained = False
                 left = self.lock_window_left()
                 if left <= 0:
                     self.send(conn, "EXPIRED")
@@ -199,6 +214,18 @@ class Server:
             self.drop_waiters(fields[1])
             fresh = at is not None and time.monotonic() - at <= PRESS_VALID_S
             self.send(conn, "YES" if fresh else "NO")
+            self.close(conn)
+        elif command == "SCANNED" and len(fields) == 3 and fields[2] in ("matched", "failed"):
+            # A match opened the lock, unless a check of the lock went away
+            # unexplained during this stretch: then the matching check may have
+            # been a program's own, through the lock's grant, and the key stays
+            # the lock's for the grace like after any other end.
+            if self.lock_scans.pop(fields[1], None) is not None:
+                if fields[2] == "matched" and not self.lock_unexplained:
+                    self.lock_left = None
+                else:
+                    self.lock_left = boottime()
+            self.send(conn, "OK")
             self.close(conn)
         elif command == "DROP" and len(fields) == 2:
             self.pressed.pop(fields[1], None)
@@ -216,8 +243,11 @@ class Server:
     def lock_waiting(self):
         return [(conn, waiter) for conn, waiter in self.waiters.items() if waiter[2] == "lock"]
 
+    def scan_holds(self, at):
+        return boottime() - at <= LOCK_SCAN_S + LOCK_GRACE_S
+
     def lock_holds_key(self):
-        if self.lock_waiting():
+        if self.lock_waiting() or any(self.scan_holds(at) for at in self.lock_scans.values()):
             return True
         return self.lock_left is not None and boottime() - self.lock_left <= LOCK_GRACE_S
 
@@ -301,9 +331,13 @@ class Server:
                 self.close(conn)
                 return
         if len(waiting) == 1:
-            conn, (pam_id, _, _, description) = waiting[0]
+            conn, (pam_id, _, kind, description) = waiting[0]
             log(f"key pressed for {description}")
             self.pressed[pam_id] = time.monotonic()
+            if kind == "lock":
+                # The scan holds the key from here, until the helper reports.
+                self.lock_scans[pam_id] = boottime()
+                del self.waiters[conn]
             self.send(conn, "KEY")
             self.close(conn)
         elif waiting:
@@ -573,6 +607,15 @@ def take(args):
         return 1
 
 
+def scanned(args):
+    pam_pid = beyond_sudo(args.pam_pid) if args.lock else args.pam_pid
+    try:
+        request(f"SCANNED\t{pam_id(pam_pid)}\t{'matched' if args.status == 0 else 'failed'}")
+    except OSError:
+        pass
+    return 0
+
+
 def drop(args):
     try:
         request(f"DROP\t{pam_id(args.pam_pid)}")
@@ -601,6 +644,11 @@ def main(argv):
         command = commands.add_parser(name)
         command.add_argument("--pam-pid", type=int, required=True)
         command.set_defaults(run=run)
+    finished = commands.add_parser("scanned")
+    finished.add_argument("--pam-pid", type=int, required=True)
+    finished.add_argument("--lock", action="store_true")
+    finished.add_argument("--status", type=int, required=True)
+    finished.set_defaults(run=scanned)
     args = parser.parse_args(argv)
     try:
         return args.run(args)

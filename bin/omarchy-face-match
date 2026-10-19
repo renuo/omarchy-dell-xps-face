@@ -174,6 +174,9 @@ else
   # service ends the wait when the lock's window since locking closes.
   refuse_unavailable_face
   "$face_key" wait --lock --pam-pid "$PPID" --user "$user" || exit 1
+  # The key service keeps the key for the lock while this scan runs, and gives
+  # it back at once when it hears the face opened the lock.
+  trap '"$face_key" scanned --lock --pam-pid "$PPID" --status "$?" 2>/dev/null' EXIT
 fi
 
 # The lid may have shut while the prompt waited for the key.
