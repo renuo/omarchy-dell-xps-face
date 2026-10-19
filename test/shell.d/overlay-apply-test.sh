@@ -13,12 +13,17 @@ checkout="$test_tmp/omarchy"
 # A checkout holding just what bin/apply-to-checkout looks for, with the
 # English catalogs as upstream formats them: shell keys sorted, menu entries
 # in menu order.
-mkdir -p "$checkout"/{bin,test/shell.d,default/omarchy,default/hypr/toggles,default/i18n/en,etc/sudoers.d} \
+mkdir -p "$checkout"/{bin,test/shell.d,default/omarchy,default/hypr/toggles,default/i18n/en,etc/sudoers.d,migrations} \
   "$checkout"/install/{user/first-run,hardware/intel} "$checkout"/shell/plugins/{lock,polkit}
 touch "$checkout/bin/omarchy" "$checkout/test/shell.d/base-test.sh" "$checkout/shell/plugins/lock/Service.qml" \
   "$checkout/shell/plugins/polkit/PolkitAgent.qml"
 # shellcheck disable=SC2016 # all.sh's own text
 printf '%s\n' 'run_logged "$OMARCHY_INSTALL/hardware/intel/ipu7-camera.sh"' >"$checkout/install/hardware/all.sh"
+# shellcheck disable=SC1003,SC2016 # the first run's own text, line continuations included
+printf '%s\n' 'run_first_run_step "install fingerprint setup post-update hook" \' \
+  '  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-fingerprint.hook"' \
+  'run_first_run_step "install agent setup post-update hook" \' \
+  '  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-agent.hook"' >"$checkout/bin/omarchy-provision-first-run"
 printf '%s\n' '{' \
   '  "setup.security.fido2": {"icon":"x","label":"Fido2","action":"omarchy-setup-security-fido2"},' \
   '  "remove.security.fido2": {"icon":"x","label":"Fido2","action":"omarchy-remove-security-fido2"},' \
@@ -62,9 +67,26 @@ pass "bin/apply-to-checkout ships the files the setup copies into place, and non
   fail "the IR leaf and its test an earlier overlay copied are gone"
 pass "bin/apply-to-checkout installs no driver leaf, and takes back the one an earlier overlay added"
 
+# shellcheck disable=SC1003,SC2016 # the first run's own text, line continuations included
+expected_first_run=$(printf '%s\n' 'run_first_run_step "install fingerprint setup post-update hook" \' \
+  '  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-fingerprint.hook"' \
+  'run_first_run_step "install face setup post-update hook" \' \
+  '  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-face.hook"' \
+  'run_first_run_step "install agent setup post-update hook" \' \
+  '  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-agent.hook"')
+[[ $(<"$checkout/bin/omarchy-provision-first-run") == "$expected_first_run" ]] ||
+  fail "the first run installs the face invitation right after fingerprint's" "$(cat "$checkout/bin/omarchy-provision-first-run")"
+for migration in "$ROOT"/migrations/*.sh; do
+  cmp -s "$migration" "$checkout/migrations/${migration##*/}" || fail "${migration##*/} reaches the checkout"
+  [[ $(stat -c %a "$checkout/migrations/${migration##*/}") == 644 ]] || fail "${migration##*/} lands 0644, as upstream's migrations do"
+done
+pass "bin/apply-to-checkout wires the invitation into the first run and ships its migration"
+
 cp -r "$checkout/default/i18n" "$test_tmp/first"
 "$ROOT/bin/apply-to-checkout" "$checkout" >/dev/null || fail "bin/apply-to-checkout applies again"
 diff -r "$test_tmp/first" "$checkout/default/i18n" >/dev/null || fail "applying twice changes the catalogs no further"
+[[ $(<"$checkout/bin/omarchy-provision-first-run") == "$expected_first_run" ]] ||
+  fail "applying twice adds the first-run step once" "$(cat "$checkout/bin/omarchy-provision-first-run")"
 pass "applying twice adds nothing twice"
 
 # A row an earlier overlay applied is replaced, not kept beside the new one.

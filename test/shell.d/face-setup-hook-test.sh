@@ -51,3 +51,32 @@ invoke 0
 invoke 1
 [[ ! -s $log ]] || fail "a finished setup gets no invitation" "$(cat "$log")"
 pass "the hook invites to the setup only while a fitted camera is not set up"
+
+# Accounts that finished their first run before the face existed would never
+# get the invitation, so a migration installs it for them too, as upstream's
+# agent invitation does.
+migration=$(grep -lF 'install/user/first-run/setup-face.hook' "$ROOT"/migrations/*.sh 2>/dev/null || true)
+(( $(wc -w <<<"$migration") == 1 )) || fail "one migration installs the invitation for existing accounts" "$migration"
+[[ $(stat -c %a "$migration") == 644 && $(head -c 2 "$migration") != '#!' && $(head -n 1 "$migration") == echo\ * ]] ||
+  fail "the migration follows upstream's format: 0644, no shebang, an echo first" "$(stat -c %a "$migration"; head -n 1 "$migration")"
+cat >"$stub_bin/omarchy-hook-install" <<'SH'
+#!/bin/bash
+printf 'hook-install %s\n' "$*" >>"$TEST_LOG"
+SH
+chmod +x "$stub_bin/omarchy-hook-install"
+: >"$log"
+TEST_LOG="$log" OMARCHY_PATH=/opt/omarchy PATH="$stub_bin:/usr/bin:/bin" bash -euo pipefail "$migration" >/dev/null ||
+  fail "the migration runs"
+[[ $(<"$log") == "hook-install post-update /opt/omarchy/install/user/first-run/setup-face.hook" ]] ||
+  fail "the migration installs the invitation as a post-update hook" "$(cat "$log")"
+pass "a migration installs the invitation for accounts past their first run"
+
+first_run="$ROOT/bin/omarchy-provision-first-run"
+if [[ -f $first_run ]]; then
+  # shellcheck disable=SC2016 # the literal is what the first run says
+  grep -qF 'omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-face.hook"' "$first_run" ||
+    fail "the first run installs the invitation"
+  pass "the first run installs the invitation as a post-update hook"
+else
+  skip "omarchy-provision-first-run is upstream's; the overlay's apply suite checks the line it adds"
+fi

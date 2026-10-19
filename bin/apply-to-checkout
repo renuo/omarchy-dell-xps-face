@@ -15,7 +15,7 @@ fi
 checkout=$(realpath -e -- "$1")
 menu="$checkout/default/omarchy/omarchy-menu.jsonc"
 
-for required in bin/omarchy test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
+for required in bin/omarchy bin/omarchy-provision-first-run migrations test/shell.d/base-test.sh default/omarchy/omarchy-menu.jsonc install/user/first-run default/hypr/toggles default/i18n/en/shell.json default/i18n/en/menu.json shell/plugins/lock/Service.qml shell/plugins/polkit/PolkitAgent.qml; do
   [[ -e $checkout/$required ]] || {
     echo "$checkout is not an Omarchy checkout: missing $required" >&2
     exit 1
@@ -31,6 +31,28 @@ for test in "$ROOT"/test/shell.d/*-test.sh; do
   install -m 644 "$test" "$checkout/test/shell.d/"
 done
 install -m 755 "$ROOT"/install/user/first-run/setup-face.hook "$checkout/install/user/first-run/"
+install -m 644 "$ROOT"/migrations/*.sh "$checkout/migrations/"
+
+# The first run installs the invitation right after fingerprint's; accounts
+# past their first run get it from the migration.
+first_run="$checkout/bin/omarchy-provision-first-run"
+# shellcheck disable=SC2016 # the first run's own text
+face_step='  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-face.hook"'
+if ! grep -qxF -- "$face_step" "$first_run"; then
+  # shellcheck disable=SC2016 # the first run's own text
+  FINGERPRINT='  omarchy-hook-install post-update "$OMARCHY_PATH/install/user/first-run/setup-fingerprint.hook"' \
+    HEAD="run_first_run_step \"install face setup post-update hook\" \\" STEP="$face_step" awk '
+      { print }
+      $0 == ENVIRON["FINGERPRINT"] { print ENVIRON["HEAD"]; print ENVIRON["STEP"]; found = 1 }
+      END { exit !found }' "$first_run" >"$first_run.tmp" || {
+    rm -f "$first_run.tmp"
+    echo "$first_run has no fingerprint hook step to follow" >&2
+    exit 1
+  }
+  # Written in place, so the command keeps its executable bit.
+  cat "$first_run.tmp" >"$first_run"
+  rm "$first_run.tmp"
+fi
 # The lock's grant is installed by the setup, only for the lock screen; an
 # earlier overlay shipped it under etc/, where every machine would get it.
 install -D -m 644 "$ROOT"/default/sudoers.d/omarchy-face-match -t "$checkout/default/sudoers.d/"

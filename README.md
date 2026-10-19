@@ -67,6 +67,7 @@ default/                           the menu rows, the Copilot key binding, the E
                                    key service's units, PAM services, lock limits and the lock screen's
                                    sudoers grant the setup copies
 install/                           the first-run invitation; the setup installs the driver package itself
+migrations/                        the invitation for accounts past their first run
 shell/plugins/                     upstream's lock and polkit plugins with the face added
 test/shell.d/                      the suites; overlay-* stay here, the rest go upstream
 ```

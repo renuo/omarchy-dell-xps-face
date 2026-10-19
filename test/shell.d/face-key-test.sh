@@ -405,6 +405,99 @@ check(notified == [2], "the user is told which two waited")
 PY
 pass "the key is the lock's while it waits and scans, free at once after a face unlock, and a few seconds after anything else"
 
+# The polkit dialog answers on Hyprland's copy of the press, which can reach
+# the helper's take before this service has read the press from the keyboard;
+# the take then waits a moment for it instead of refusing a real press.
+python3 - <<'PY' || fail "a take that comes before the press waits for it"
+import os, sys
+exec(open(os.environ["TEST_LOAD"]).read())
+
+def check(condition, description):
+    if not condition:
+        print(f"not ok - {description}", file=sys.stderr)
+        sys.exit(1)
+
+clock = [100.0]
+
+class FakeTime:
+    @staticmethod
+    def monotonic():
+        return clock[0]
+
+key.time = FakeTime
+key.boottime = lambda: clock[0]
+key.log = lambda message: None
+
+class Listener:
+    def __init__(self):
+        self.fd, _ = os.pipe()
+
+    def setblocking(self, flag):
+        pass
+
+    def fileno(self):
+        return self.fd
+
+class Conn:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+
+    def sendall(self, data):
+        self.sent.append(data.decode().rstrip("\n"))
+
+    def recv(self, size):
+        return b""
+
+    def fileno(self):
+        return -1
+
+    def close(self):
+        self.closed = True
+
+server = key.Server(Listener())
+server.open_keyboards = lambda: None
+
+def connect():
+    conn = Conn()
+    server.buffers[conn] = b""
+    return conn
+
+def wait(pam):
+    conn = connect()
+    server.handle(conn, ["WAIT", pam, "alice", "prompt", f"a polkit dialog {pam}"])
+    return conn
+
+def take(pam):
+    conn = connect()
+    server.handle(conn, ["TAKE", pam])
+    return conn
+
+dialog = wait("1:1")
+early = take("1:1")
+check(early.sent == [] and not early.closed and not dialog.closed, "a take before the press waits, and so does its prompt")
+server.key_pressed()
+check(dialog.sent[-1] == "KEY" and early.sent == ["YES"] and early.closed, "the press that follows answers the take")
+check("1:1" not in server.pressed, "the press it answered is consumed")
+
+dialog = wait("2:2")
+early = take("2:2")
+clock[0] += key.TAKE_WAIT_S - 0.1
+server.expire_takes()
+check(early.sent == [], "the take keeps waiting within its bound")
+clock[0] += 0.2
+server.expire_takes()
+check(early.sent == ["NO"] and early.closed and dialog.closed, "without a press in time the take is refused and its prompt dropped")
+
+check(take("3:3").sent == ["NO"], "a take for a prompt that is not waiting is refused at once")
+
+dialog = wait("4:4")
+server.key_pressed()
+late = take("4:4")
+check(late.sent == ["YES"], "a take after the press is answered at once, as before")
+PY
+pass "a take that reaches the service before its press waits a moment for it"
+
 # The service speaks over a Unix socket; a sandbox without them cannot run it.
 if ! python3 -c 'import socket; socket.socket(socket.AF_UNIX).close()' 2>/dev/null; then
   skip "Unix sockets are unavailable here; the service itself is not exercised"
@@ -512,6 +605,21 @@ event 1
 until_true 30 logged_at_least 'key pressed for' $((presses + 1)) || fail "the detached prompt is released" "$(cat "$service_log")"
 key_take "$g" || fail "the detached prompt's press is there for the helper to take"
 pass "a detached prompt keeps waiting in the background and its press can be taken"
+
+prompt
+t=$prompt_pid
+waiter "$t"
+wt=$waiter_pid
+until_true 30 reading event3 || fail "a polkit-like prompt waits" "$(cat "$service_log")"
+key_take "$t" &
+taker=$!
+pids+=("$taker")
+sleep 0.3
+running "$taker" || fail "a take that comes before the press waits for it"
+event 1
+exited_with "$taker" 0 || fail "the press that follows answers the take" "$(cat "$service_log")"
+exited_with "$wt" 0 || fail "the prompt is released by the same press"
+pass "a take that reaches the service before its press, as the polkit dialog's may, still gets it"
 
 prompt
 status=0

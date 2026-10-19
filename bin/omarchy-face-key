@@ -64,6 +64,10 @@ KEY_DOWN = 1
 EVENT = struct.Struct("llHHi")
 
 PRESS_VALID_S = 5
+# The polkit dialog answers on Hyprland's copy of the press, which can reach the
+# helper's take before this service has read the keyboard; the take waits this
+# long for the press instead of refusing it.
+TAKE_WAIT_S = 1.0
 IDLE_EXIT_S = 30
 LOCK_GRACE_S = 5
 # The lock screen gives up on a scan after this long (ATTEMPT_TIMEOUT_MS in
@@ -124,6 +128,7 @@ class Server:
         self.buffers = {}
         self.waiters = {}
         self.pressed = {}
+        self.takes = {}
         self.children = []
         self.lock_since = None
         self.lock_left = None
@@ -133,7 +138,7 @@ class Server:
 
     def run(self):
         while True:
-            for key, _ in self.selector.select(timeout=1.0):
+            for key, _ in self.selector.select(timeout=self.select_timeout()):
                 kind, data = key.data
                 if kind == "listener":
                     self.accept()
@@ -142,6 +147,7 @@ class Server:
                 else:
                     self.read_keyboard(data)
             self.children = [child for child in self.children if child.poll() is None]
+            self.expire_takes()
             now = time.monotonic()
             self.pressed = {pid: at for pid, at in self.pressed.items() if now - at <= PRESS_VALID_S}
             self.lock_scans = {pid: at for pid, at in self.lock_scans.items() if self.scan_holds(at)}
@@ -211,8 +217,12 @@ class Server:
             self.send(conn, reply)
         elif command == "TAKE" and len(fields) == 2:
             at = self.pressed.pop(fields[1], None)
-            self.drop_waiters(fields[1])
             fresh = at is not None and time.monotonic() - at <= PRESS_VALID_S
+            if not fresh and any(waiter[0] == fields[1] for waiter in self.waiters.values()):
+                self.answer_take(fields[1], False)
+                self.takes[fields[1]] = (conn, time.monotonic() + TAKE_WAIT_S)
+                return
+            self.drop_waiters(fields[1])
             self.send(conn, "YES" if fresh else "NO")
             self.close(conn)
         elif command == "SCANNED" and len(fields) == 3 and fields[2] in ("matched", "failed"):
@@ -240,6 +250,29 @@ class Server:
             if waiter_id == pam_id:
                 self.close(conn)
 
+    def answer_take(self, pam_id, granted):
+        parked = self.takes.pop(pam_id, None)
+        if parked is None:
+            return
+        if granted:
+            self.pressed.pop(pam_id, None)
+        else:
+            self.drop_waiters(pam_id)
+        self.send(parked[0], "YES" if granted else "NO")
+        self.close(parked[0])
+
+    def expire_takes(self):
+        now = time.monotonic()
+        for pam_id, (_, deadline) in list(self.takes.items()):
+            if now >= deadline:
+                self.answer_take(pam_id, False)
+
+    def select_timeout(self):
+        if not self.takes:
+            return 1.0
+        soonest = min(deadline for _, deadline in self.takes.values())
+        return max(0.0, min(1.0, soonest - time.monotonic()))
+
     def lock_waiting(self):
         return [(conn, waiter) for conn, waiter in self.waiters.items() if waiter[2] == "lock"]
 
@@ -262,6 +295,9 @@ class Server:
 
     def close(self, conn):
         self.buffers.pop(conn, None)
+        for pam_id, (parked, _) in list(self.takes.items()):
+            if parked is conn:
+                del self.takes[pam_id]
         waiter = self.waiters.pop(conn, None)
         if waiter is not None and waiter[2] == "lock" and not self.lock_waiting():
             self.lock_left = boottime()
@@ -340,6 +376,7 @@ class Server:
                 del self.waiters[conn]
             self.send(conn, "KEY")
             self.close(conn)
+            self.answer_take(pam_id, True)
         elif waiting:
             descriptions = [description for _, (_, _, _, description) in waiting]
             log("key refused, several prompts wait: " + "; ".join(descriptions))
