@@ -472,6 +472,17 @@ def clear_and_submit(tty):
         fcntl.ioctl(tty, termios.TIOCSTI, bytes([byte]))
 
 
+def tell_lock(line):
+    """A line for the lock screen; False once its conversation closed its end."""
+    try:
+        print(line, flush=True)
+        return True
+    except BrokenPipeError:
+        # Python's own advice: point stdout elsewhere so the exit's flush stays quiet.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return False
+
+
 def watch_process(pid):
     try:
         return os.pidfd_open(pid)
@@ -501,7 +512,8 @@ def wait(args):
         # The service bounds the lock's window, from its first check; the lock
         # offers the face only once it reads that this check waits.
         deadline = boottime() + float(fields[1])
-        print(ARMED_MESSAGE, flush=True)
+        if not tell_lock(ARMED_MESSAGE):
+            return 1
     conn.settimeout(None)
 
     if args.detach:
@@ -543,8 +555,8 @@ def wait(args):
         if fields[0] == "CONFLICT":
             if tty is not None:
                 os.write(tty, f"\r\n{REFUSED_MESSAGE}: {', '.join(fields[1:])}\r\n".encode())
-            if args.lock:
-                print(REFUSED_MESSAGE, flush=True)
+            if args.lock and not tell_lock(REFUSED_MESSAGE):
+                return 1
         elif fields[0] == "LOCKED":
             if tty is not None:
                 os.write(tty, f"\r\n{LOCKED_MESSAGE}\r\n".encode())

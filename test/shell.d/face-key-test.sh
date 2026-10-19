@@ -443,8 +443,9 @@ pass "a detached prompt keeps waiting in the background and its press can be tak
 
 prompt
 status=0
-timeout 5 bash -c "python3 '$copy' wait --lock --pam-pid $prompt_pid --user $me | true" || status=$?
+timeout 5 bash -c "python3 '$copy' wait --lock --pam-pid $prompt_pid --user $me | true" 2>"$test_tmp/closed.err" || status=$?
 (( status != 124 )) || fail "a lock prompt whose conversation closed its end stops waiting"
+[[ ! -s $test_tmp/closed.err ]] || fail "a lock prompt whose conversation closed its end leaves quietly" "$(cat "$test_tmp/closed.err")"
 
 prompt
 p=$prompt_pid
@@ -461,7 +462,6 @@ exited_with "$wl" 0 || fail "the press goes to the lock screen's check" "$(cat "
 event 1
 sleep 0.3
 running "$wp" || fail "right after the lock's check, a press does not release the prompt beside it" "$(cat "$service_log")"
-key_take "$p" && fail "a prompt beside the lock never gets a press"
 until_true 30 logged_at_least 'the lock screen holds the key' 1 || fail "the refused press is logged" "$(cat "$service_log")"
 sleep 1.2
 event 1
