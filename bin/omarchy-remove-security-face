@@ -31,14 +31,15 @@ fi
 
 
 # Drop the face module and only the clamshell gate directly above it, so a
-# fingerprint stack sharing the file keeps its own gate.
+# fingerprint stack sharing the file keeps its own gate. Stacks set up before
+# the face had its own gate carry fingerprint's name for it.
 remove_face_lines() {
   local file=$1 label=$2
 
   if [[ -f $file ]] && grep -Eq -- "$face_marker" "$file"; then
     echo "Removing face authentication from $label..."
     sudo sed -i -E \
-      -e "\\%omarchy-hw-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
+      -e "\\%omarchy-(face|hw)-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
       -e "\\%$face_marker%d" "$file"
   fi
 }

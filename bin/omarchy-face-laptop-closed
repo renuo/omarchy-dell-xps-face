@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# omarchy:summary=Tell PAM the lid is closed, so the face lines are skipped
+# omarchy:hidden=true
+
+# The fingerprint wizards match the text omarchy-hw-laptop-closed and take any
+# such line for their own, so the face's gate goes by this name instead.
+exec /usr/bin/omarchy-hw-laptop-closed

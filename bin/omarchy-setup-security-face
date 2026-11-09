@@ -42,10 +42,10 @@ face_hint="auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-
 # A clamshell gate runs before the face lines in every stack: a shut lid covers
 # the camera, so it skips them (success=N) and PAM drops straight to the
 # password prompt instead of waiting for Howdy to time out. pam_exec needs a
-# literal absolute path, so point at the fixed /usr/bin one the omarchy package
-# always provides.
+# literal absolute path. The gate has its own name because fingerprint's
+# wizards take every omarchy-hw-laptop-closed line for their own.
 face_gate_skipping() {
-  echo "auth      [success=$1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed"
+  echo "auth      [success=$1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-face-laptop-closed"
 }
 
 # Howdy's stable release ships a pam_python script, which needs Python 2, so
@@ -108,10 +108,11 @@ stack_has_block() {
 }
 
 # Face lines go together with only the gate directly above them, so a
-# fingerprint stack sharing the file keeps its own gate.
+# fingerprint stack sharing the file keeps its own gate. Stacks set up before
+# the face had its own gate carry fingerprint's name for it.
 strip_face_lines() {
   sudo sed -i -E \
-    -e "\\%omarchy-hw-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
+    -e "\\%omarchy-(face|hw)-laptop-closed%{N;\\%\\n.*($face_marker)%d;P;D}" \
     -e "\\%$face_marker%d" "$1"
 }
 

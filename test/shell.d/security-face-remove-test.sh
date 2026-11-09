@@ -19,7 +19,8 @@ copy="$test_tmp/remove.sh"
 mkdir -p "$stub_bin"
 
 gate='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
-face_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
+face_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-face-laptop-closed'
+old_face_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 hint_line='auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint'
 stable_line='auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match'
 legacy_line='auth      sufficient pam_python.so /usr/lib/security/howdy/pam.py'
@@ -209,6 +210,13 @@ invoke_remove || fail "removal succeeds over a gateless face line" "$(cat "$outp
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
   fail "a gateless face line goes and the fingerprint gate stays" "$(cat "$pamd/sudo")"
 pass "removal takes only the gate directly above the face module"
+
+reset_fixture
+write_stack sudo "$old_face_gate" "$hint_line" "$stable_line" "$gate" "$fingerprint_line" "$includes"
+invoke_remove || fail "removal succeeds over a block sharing fingerprint's gate" "$(cat "$output")"
+[[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
+  fail "a block set up before the face had its own gate goes with that gate" "$(cat "$pamd/sudo")"
+pass "removal recognises the gate stacks carried before the face had its own"
 
 reset_fixture
 write_stack sudo "$includes" "$gate"

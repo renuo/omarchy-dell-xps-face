@@ -25,7 +25,8 @@ copy="$test_tmp/setup.sh"
 mkdir -p "$stub_bin"
 
 # The face block skips two lines (hint and module); fingerprint's gate skips one.
-gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
+gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-face-laptop-closed'
+old_gate='auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 gate1='auth      [success=1 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed'
 hint='auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint'
 # sudo and polkit ask first; the lock service waits for the key on its own.
@@ -468,11 +469,19 @@ pass "the face goes below FIDO2 and fingerprint, and an earlier block above them
 reset_fixture
 printf 'auth      sufficient %s\n%s' "$stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
 invoke_setup ready stable || fail "setup succeeds over a gateless face line" "$(cat "$output")"
-(( $(grep -c -- 'omarchy-hw-laptop-closed' "$pamd/sudo") == 1 )) || fail "a missing gate is added once" "$(cat "$pamd/sudo")"
+(( $(grep -c -- 'omarchy-face-laptop-closed' "$pamd/sudo") == 1 )) || fail "a missing gate is added once" "$(cat "$pamd/sudo")"
 [[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
   fail "the gate and the hint land directly above the face module" "$(cat "$pamd/sudo")"
 (( $(grep -c -- 'omarchy-face-match' "$pamd/sudo") == 2 )) || fail "the stray face line is replaced, not duplicated" "$(cat "$pamd/sudo")"
 pass "setup repairs a face line that lost its clamshell gate"
+
+reset_fixture
+printf '%s\n%s\n%s\n%s' "$old_gate" "$hint" "auth      sufficient $stable_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
+invoke_setup ready stable || fail "setup succeeds over a block that shares fingerprint's gate" "$(cat "$output")"
+[[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
+  fail "the face moves to its own gate" "$(cat "$pamd/sudo")"
+! grep -q -- 'omarchy-hw-laptop-closed' "$pamd/sudo" || fail "the shared gate goes" "$(cat "$pamd/sudo")"
+pass "setup moves a block from fingerprint's gate to the face's own"
 
 reset_fixture
 printf '%s\n%s\n%s' "$gate1" "auth      sufficient $legacy_module" "$(cat "$pamd/sudo")" >"$pamd/sudo"
@@ -480,7 +489,7 @@ invoke_setup ready stable || fail "setup succeeds over a pam_python face line" "
 [[ $(sed -n 1,3p "$pamd/sudo") == "$(printf '%s\n' "$gate" "$hint" "auth      sufficient $stable_module")" ]] ||
   fail "the pam_python pair is replaced by the asking block" "$(cat "$pamd/sudo")"
 ! grep -q 'pam_python' "$pamd/sudo" || fail "no pam_python line remains" "$(cat "$pamd/sudo")"
-(( $(grep -c -- 'omarchy-hw-laptop-closed' "$pamd/sudo") == 1 )) || fail "the old gate goes with its module" "$(cat "$pamd/sudo")"
+! grep -q -- 'omarchy-hw-laptop-closed' "$pamd/sudo" || fail "the old gate goes with its module" "$(cat "$pamd/sudo")"
 pass "setup replaces the pam_python glue of an earlier setup with the asking block"
 
 reset_fixture

@@ -30,7 +30,7 @@ No kernel has a sensor driver yet; one is under review on linux-media. `ipu-brid
 Presence is not consent. A camera sees a face whether or not its owner meant to approve anything, while a fingerprint reader only answers to a deliberate touch, so a scan waits for a touch of its own: the Copilot key, read by root from the keyboard (see "The face key" below). sudo and polkit carry this block, inserted on top of their stacks, or directly below the last fingerprint (`pam_fprintd.so`) or FIDO2 (`pam_u2f.so`) line where there is one. Those wait on their own, and the face rides on the password prompt, so a typed password then reaches pam_unix without waiting for a finger or a security key first:
 
 ```
-auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed
+auth      [success=2 default=ignore] pam_exec.so quiet /usr/bin/omarchy-face-laptop-closed
 auth      optional pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match --hint
 auth      sufficient pam_exec.so seteuid quiet stdout expose_authtok /usr/bin/omarchy-face-match
 ```
@@ -85,7 +85,7 @@ To try it from a checkout, `omarchy dev pkg-test` installs the checkout as packa
 - The Copilot key stops opening the Omarchy menu while the face is set up; Super + Space still does.
 - sudo's prompt is answered by injecting into its terminal, so face works where sudo asks on the terminal; `sudo -S` and a graphical askpass fall back to the password.
 - The IR module has no privacy LED, and the RGB camera's cannot stand in: the V4L2 core claims a sensor's privacy LED when the sensor registers (`v4l2_subdev_get_privacy_led()` calls `led_sysfs_disable()`), so writes to `/sys/class/leds/OVTI08F4_00::privacy_led/brightness` fail with `EBUSY` and only the RGB sensor's own streaming lights it. Only the prompt's or the lock screen's own text shows an IR scan.
-- Upstream's fingerprint wizards take every `omarchy-hw-laptop-closed` line for their own gate: the removal deletes the face's gate too, and a setup beside the face leaves `pam_fprintd` ungated. [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685) makes them recognize their gate by its place directly above `pam_fprintd.so`, the way the face wizards do; the face's pull request waits for it.
+- Stock's fingerprint wizards take every `omarchy-hw-laptop-closed` line for their own gate: the removal deletes it, and a setup beside it leaves `pam_fprintd` ungated. [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685) would fix them; the face's own gate needs no change to them and works with or without that fix. The package moves stacks set up with the shared gate to the face's own.
 - The setup stops for a reboot after installing the driver. Now that the kernel's `ipu-bridge` lists the sensor from boot, starting `hm1092-camera-init.service` and `hm1092-relay.service` may be enough instead; untried on the device.
 - `pamtester` and `howdy` are AUR packages; `python-dlib` builds for a while. Howdy has not tagged a release since 2.6.1 (2020) although its beta with a native PAM module merged into master in 2025; `howdy-git` and the C++ `howdy-next` on the AUR are the candidates if the stable package falls behind.
 - Howdy opens the relay device through OpenCV, which reaches it via FFmpeg's video4linux input. FFmpeg prints `ioctl(VIDIOC_QBUF): Bad file descriptor` when Howdy releases the capture, because it returns the last frame buffer after closing the device. Harmless; the frames were already read.
