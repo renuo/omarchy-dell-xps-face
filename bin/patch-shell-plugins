@@ -164,7 +164,7 @@ FACE_FUNCS = '''  // The lock keeps a face check waiting while it offers the fac
       faceNoMatchTimer.stop()
       faceAbortTimer.restart()
       logEvent("face-attempt: " + faceAttempts + "/" + facePolicy.attempts)
-      if (displaysBlank) runWake()
+      runWake()
     } else if (message === FaceModel.ARMED_MESSAGE) {
       faceArmed = true
       logEvent("face-armed")
