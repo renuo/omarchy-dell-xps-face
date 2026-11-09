@@ -18,7 +18,7 @@ import sys
 
 
 def once(s, old, new):
-    assert s.count(old) == 1, f"anchor not unique: {old[:60]!r}"
+    assert s.count(old) == 1, f"anchor found {s.count(old)} times, not once: {old[:60]!r}"
     return s.replace(old, new)
 
 
@@ -451,8 +451,8 @@ def patch_lock(src, dst):
     service = once(service, "        fingerprint: root.fingerprintConfigured,\n",
         "        fingerprint: root.fingerprintConfigured,\n        face: root.faceConfigured,\n        faceState: root.faceState,\n"
         "        faceAttempts: root.faceAttempts,\n        faceArmed: root.faceArmed,\n        faceAuthenticating: root.faceAuthenticating,\n")
-    service = once(service, "  function armBlankTimer() {\n",
-        "  function armBlankTimer() {\n"
+    service = sub_once(service, r"^  function armBlankTimer\((\w*)\) \{\n",
+        r"  function armBlankTimer(\1) {\n"
         "    // A face scan holds the display up, since blanking would cut it short\n"
         "    // and spend one of the lock's attempts; its end re-arms the timer.\n"
         "    if (faceAuthenticating) return\n")

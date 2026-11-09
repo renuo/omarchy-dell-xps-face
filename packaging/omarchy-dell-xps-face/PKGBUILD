@@ -6,7 +6,7 @@
 
 pkgname=omarchy-dell-xps-face
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Face authentication for Omarchy on Dell XPS laptops with the HM1092 IR camera"
 arch=('any')
 url="https://github.com/renuo/omarchy-dell-xps-face"
