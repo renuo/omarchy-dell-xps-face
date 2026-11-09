@@ -26,6 +26,12 @@ Each part only stands in for what Omarchy lacks:
 
 Back to stock: `omarchy remove security face`, `sudo pacman -Rns omarchy-dell-xps-face`.
 
+## Omarchy versions
+
+`main` is for Omarchy 4.5: v4.5.0-rc1 and the 4.5 line on the edge channel. Omarchy 4.0 lacks the translated lock screen the patch builds on, so the face does not install there.
+
+`main` follows Omarchy forward. Before the release after 4.5, an `omarchy-4.5` branch keeps what works on 4.5, and `main` takes the adjustments the newer Omarchy needs. Each later release gets its branch the same way, so on an older Omarchy, install from the branch named after it.
+
 ## How it works
 
 The Copilot key is the consent. Root reads it from the keyboard itself, so no program can press it for you, and the camera stays dark until you do. The password always works. If two prompts wait for the key at once, neither gets your face, and a notification names both.
