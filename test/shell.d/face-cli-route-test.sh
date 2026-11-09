@@ -49,7 +49,11 @@ jq -e '.commands[] | select(.binary == "omarchy-remove-security-face" and .route
   fail "the removal wizard routes as omarchy remove security face and asks for sudo" "$registry"
 jq -e '.commands[] | select(.binary == "omarchy-face-match" and .route == "omarchy face match" and .hidden == true)' <<<"$registry" >/dev/null ||
   fail "the pam_exec helper routes as omarchy face match and stays hidden like omarchy-hw-laptop-closed" "$registry"
-pass "the dispatcher resolves all four routes from the filenames"
+for hidden in face-integrate face-laptop-closed; do
+  jq -e --arg binary "omarchy-$hidden" '.commands[] | select(.binary == $binary and .hidden == true)' <<<"$registry" >/dev/null ||
+    fail "omarchy-$hidden stays hidden" "$registry"
+done
+pass "the dispatcher resolves all routes from the filenames"
 
 for route in "hw dell xps ir camera" "setup security face" "remove security face"; do
   # shellcheck disable=SC2086

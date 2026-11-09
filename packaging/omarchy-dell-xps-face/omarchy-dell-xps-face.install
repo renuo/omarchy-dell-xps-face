@@ -1,0 +1,19 @@
+# Stacks set up while the face shared fingerprint's gate move to the face's own,
+# which fingerprint's wizards leave alone.
+_own_gate() {
+  local stack
+
+  for stack in etc/pam.d/sudo etc/pam.d/polkit-1; do
+    [[ -f $stack ]] || continue
+    sed -i -e '/omarchy-hw-laptop-closed/{N;/\n.*omarchy-face-match/s/omarchy-hw-laptop-closed/omarchy-face-laptop-closed/;P;D}' "$stack"
+  done
+}
+
+post_install() {
+  _own_gate
+  echo "Run omarchy-face-integrate as your user, then reboot so ipu-bridge-hm1092 loads."
+}
+
+post_upgrade() {
+  _own_gate
+}

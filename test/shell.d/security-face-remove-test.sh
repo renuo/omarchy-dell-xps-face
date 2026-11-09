@@ -98,6 +98,16 @@ cat >"$stub_bin/omarchy-pkg-drop" <<'SH'
 printf 'package %s\n' "$*" >>"$TEST_LOG"
 SH
 
+cat >"$stub_bin/omarchy-cmd-present" <<'SH'
+#!/bin/bash
+[[ $* == omarchy-face-integrate ]]
+SH
+
+cat >"$stub_bin/omarchy-face-integrate" <<'SH'
+#!/bin/bash
+printf 'integrate %s\n' "$*" >>"$TEST_LOG"
+SH
+
 cat >"$stub_bin/omarchy-hyprland-toggle-enabled" <<'SH'
 #!/bin/bash
 [[ $* == "face-key" && -f $TEST_TOGGLE ]]
@@ -149,6 +159,7 @@ printf 'LOCK_ATTEMPTS=1\nLOCK_WINDOW_MINUTES=60\n' >"$omarchy_etc/face.conf"
 : >"$units/omarchy-face-key.service"
 : >"$test_tmp/toggle"
 invoke_remove || fail "removal succeeds on a configured machine" "$(cat "$output"; cat "$log")"
+grep -qx 'integrate --remove' "$log" || fail "the lock screen and polkit dialog go back to Omarchy's" "$(cat "$log")"
 [[ $(<"$pamd/sudo") == "$(printf '%s\n' "$gate" "$fingerprint_line" "$includes")" ]] ||
   fail "sudo keeps the fingerprint pair and loses only the face pair" "$(cat "$pamd/sudo")"
 [[ $(<"$pamd/polkit-1") == "$includes" ]] || fail "polkit loses the face pair" "$(cat "$pamd/polkit-1")"

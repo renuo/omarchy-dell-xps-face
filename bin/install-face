@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# Put the face on a packaged Omarchy: the IR camera driver unless a repository
+# carries it, this overlay's package, and its place in the running shell.
+
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+driver_repo=https://github.com/omacom/omarchy-pkgs.git
+driver_commit=9a462ffc103ffb7badab548b552074451c8e59c3 # omacom/omarchy-pkgs#1213
+
+die() {
+  echo -e "\e[31mError: $*\e[0m" >&2
+  exit 1
+}
+
+(( EUID != 0 )) || die "run as your user, makepkg refuses to build as root"
+linked=$(sed -n 's/^export OMARCHY_PATH="\(.*\)"$/\1/p' /etc/omarchy.conf 2>/dev/null || true)
+[[ ${linked:-/usr/share/omarchy} == /usr/share/omarchy ]] ||
+  die "Omarchy is dev-linked to $linked: run omarchy dev unlink and reboot first"
+[[ ${OMARCHY_PATH:-/usr/share/omarchy} == /usr/share/omarchy ]] ||
+  die "this session still runs $OMARCHY_PATH: reboot first"
+
+work=$(mktemp -d -t omarchy-dell-xps-face.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+
+install_driver() {
+  if omarchy-pkg-present hm1092-ir-camera; then
+    return
+  fi
+  if pacman -Si hm1092-ir-camera >/dev/null 2>&1; then
+    omarchy-pkg-add hm1092-ir-camera
+    return
+  fi
+
+  # A global insteadOf that turns GitHub https into ssh would make this public
+  # fetch need keys. The longest match wins, so this keeps https.
+  git init -q "$work/pkgs"
+  git -C "$work/pkgs" -c "url.$driver_repo.insteadOf=$driver_repo" fetch -q --depth 1 "$driver_repo" "$driver_commit"
+  git -C "$work/pkgs" checkout -q FETCH_HEAD
+  (cd "$work/pkgs/pkgbuilds/hm1092-ir-camera" && makepkg -si --noconfirm)
+}
+
+install_driver
+(cd "$ROOT/packaging/omarchy-dell-xps-face" && BUILDDIR=$work/build PKGDEST=$work SRCDEST=$work makepkg -sfi --noconfirm)
+omarchy-face-integrate
+
+echo -e "\e[32m\nInstalled. Reboot so the IR camera binds, then run omarchy setup security face unless the face is set up already.\e[0m"

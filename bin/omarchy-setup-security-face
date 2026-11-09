@@ -23,10 +23,13 @@ face_marker='pam_howdy[.]so|howdy/pam[.]py|omarchy-face-match'
 # without waiting for a finger or a security key first.
 waiting_modules='pam_(fprintd|u2f)[.]so'
 
-# Files the setup owns whole ship in the checkout's default/, so an Omarchy
-# update reaches them; the setup copies them root-owned into place.
+# Files the setup owns whole ship in the overlay's package, or in Omarchy's
+# default/ once it carries them; the setup copies them root-owned into place.
+face_defaults=$OMARCHY_PATH/default
+[[ -f $face_defaults/pam.d/omarchy-lock-face ]] || face_defaults=/usr/share/omarchy-dell-xps-face/default
+
 install_default() {
-  sudo install -Dm644 -o root -g root "$OMARCHY_PATH/default/$1" "$2"
+  sudo install -Dm644 -o root -g root "$face_defaults/$1" "$2"
 }
 
 # Presence is not consent: a camera sees a face whether or not its owner meant
@@ -184,7 +187,7 @@ setup_lock_grant() {
   local staged
 
   staged=$(mktemp)
-  cp "$OMARCHY_PATH/default/sudoers.d/omarchy-face-match" "$staged"
+  cp "$face_defaults/sudoers.d/omarchy-face-match" "$staged"
   if ! visudo -cf "$staged" >/dev/null; then
     rm -f "$staged"
     echo -e "\e[31mRefusing to install an invalid $lock_grant.\e[0m"
@@ -218,7 +221,9 @@ setup_face_key() {
   install_default systemd/system/omarchy-face-key.service "$key_service"
   sudo systemctl daemon-reload
   sudo systemctl enable --now omarchy-face-key.socket
-  omarchy-hyprland-toggle face-key on
+  # omarchy-hyprland-toggle only finds flags in Omarchy's own tree.
+  install -Dm644 "$face_defaults/hypr/toggles/face-key.lua" "$HOME/.local/state/omarchy/toggles/hypr/face-key.lua"
+  hyprctl reload >/dev/null || true
 }
 
 # Verify through PAM before touching any stack: the helper waits for the
@@ -255,7 +260,7 @@ if ! omarchy-hw-dell-xps-ir-camera; then
 fi
 
 if [[ ! -x $face_key ]]; then
-  echo -e "\e[31m$face_key is missing; update Omarchy and run this setup again.\e[0m"
+  echo -e "\e[31m$face_key is missing; run the overlay's bin/install-face and this setup again.\e[0m"
   exit 1
 fi
 
@@ -273,8 +278,8 @@ fi
 
 if [[ ! -e $face_device ]]; then
   echo -e "\e[31mThe IR camera driver is installed, but its grayscale relay publishes no device.\e[0m"
-  echo "The sensor binds only on linux-omarchy 7.2.8-2 or later, whose ipu-bridge lists it."
-  echo "Check 'systemctl status hm1092-relay' and run this setup again once $face_device exists."
+  echo "The sensor binds only where ipu-bridge lists it: the kernel's own, or the ipu-bridge-hm1092 DKMS module."
+  echo "Check 'dkms status' and 'systemctl status hm1092-relay', reboot, and run this setup again once $face_device exists."
   exit 1
 fi
 

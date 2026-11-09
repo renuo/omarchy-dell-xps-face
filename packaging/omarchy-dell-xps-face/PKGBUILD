@@ -1,0 +1,57 @@
+# Maintainer: Josua Schmid <josua.schmid@renuo.ch>
+#
+# The face for a packaged Omarchy, built from this checkout by bin/install. The
+# ipu-bridge carries linux-omarchy's own patches plus the sensor it dropped,
+# for kernels that do not list it (see ipu-bridge-hm1092.dkms.conf).
+
+pkgname=omarchy-dell-xps-face
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Face authentication for Omarchy on Dell XPS laptops with the HM1092 IR camera"
+arch=('any')
+url="https://github.com/renuo/omarchy-dell-xps-face"
+license=('MIT' 'GPL-2.0-only')
+depends=('dkms' 'jq' 'python' 'zstd')
+optdepends=('hm1092-ir-camera: the IR camera driver the face needs')
+install="$pkgname.install"
+
+_bridge_kver=7.2.14
+
+source=(
+  "ipu-bridge-$_bridge_kver.c::https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/media/pci/intel/ipu-bridge.c?h=v$_bridge_kver"
+  ipu-bridge-hm1092.patch
+  ipu-bridge-hm1092.dkms.conf
+  ipu-bridge-hm1092.Makefile
+)
+sha256sums=('dfdca598bc76dfe3812abb7f6f8ab4332c361259f5f14e6e782052c2f7d8f600'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+  mkdir -p bridge
+  cp "ipu-bridge-$_bridge_kver.c" bridge/ipu-bridge.c
+  patch -d bridge -p1 -i "$srcdir/ipu-bridge-hm1092.patch"
+}
+
+package() {
+  local root share="$pkgdir/usr/share/$pkgname" bridge="$pkgdir/usr/src/ipu-bridge-hm1092-$pkgver" command
+
+  root=$(realpath "$startdir/../..")
+
+  install -Dm755 -t "$pkgdir/usr/bin" "$root"/bin/omarchy-*
+  install -d "$pkgdir/usr/share/omarchy/bin"
+  for command in "$root"/bin/omarchy-*; do
+    ln -s "/usr/bin/${command##*/}" "$pkgdir/usr/share/omarchy/bin/${command##*/}"
+  done
+
+  install -Dm755 "$root/bin/patch-shell-plugins" "$share/bin/patch-shell-plugins"
+  install -d "$share"
+  cp -r --no-preserve=ownership "$root/default" "$share/"
+  install -Dm755 -t "$share/install/user/first-run" "$root"/install/user/first-run/*.hook
+
+  install -Dm644 bridge/ipu-bridge.c "$bridge/ipu-bridge.c"
+  install -Dm644 ipu-bridge-hm1092.Makefile "$bridge/Makefile"
+  sed "s/@PKGVER@/$pkgver/" ipu-bridge-hm1092.dkms.conf >"$bridge/dkms.conf"
+  install -Dm644 "$root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -22,7 +22,7 @@ if [[ -f $utilities ]]; then
 fi
 pass "the toggle takes the key root watches from the Omarchy menu and hands it to the polkit dialog"
 
-grep -qx '  omarchy-hyprland-toggle face-key on' "$setup" || fail "the setup turns the toggle on"
+grep -qF '/.local/state/omarchy/toggles/hypr/face-key.lua' "$setup" || fail "the setup turns the toggle on, also where Omarchy's tree lacks the flag"
 grep -qx '    omarchy-hyprland-toggle face-key off' "$remove" || fail "the removal turns it off again"
 pass "the face setup takes the key and the removal gives it back"
 

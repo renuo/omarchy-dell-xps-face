@@ -4,30 +4,27 @@ Face authentication for [Omarchy](https://omarchy.org) on the Dell XPS 14 (DA142
 
 ## Install
 
-Until it is upstream, it runs on a checkout of Omarchy through Omarchy's own development tools, which means running Omarchy's development branch. It builds on two pull requests that are still open:
-
-- [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213), the IR camera driver `hm1092-ir-camera`. The sensor only binds on linux-omarchy 7.2.8-2 or later, whose ipu-bridge lists it, and that kernel is on the edge channel until the next release.
-- [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685), which keeps the fingerprint wizards to their own lid gate. Without it, removing fingerprint also deletes the face's gate, and setting fingerprint up after the face leaves `pam_fprintd` ungated.
+It installs on a packaged Omarchy on the edge channel, with no checkout and no dev link:
 
 ```
-omarchy channel set edge                            # linux-omarchy 7.2.8-2 and intel-ipu7-camera 1.0.6-3, then reboot
+omarchy channel set edge                            # then reboot
 git clone https://github.com/renuo/omarchy-dell-xps-face && cd omarchy-dell-xps-face
-git clone https://github.com/omacom/omarchy-pkgs ~/Work/omarchy/omarchy-pkgs
-git -C ~/Work/omarchy/omarchy-pkgs fetch origin pull/1213/head:hm1092-ir-camera
-git -C ~/Work/omarchy/omarchy-pkgs worktree add ~/Work/omarchy/hm1092-ir-camera hm1092-ir-camera
-(cd ~/Work/omarchy/hm1092-ir-camera/pkgbuilds/hm1092-ir-camera && makepkg -si)   # the driver, until Omarchy's repository has it
-git clone https://github.com/omacom/omarchy ~/Work/omarchy/omarchy-installer
-git -C ~/Work/omarchy/omarchy-installer fetch origin pull/15685/head:fingerprint-own-gate
-git -C ~/Work/omarchy/omarchy-installer switch fingerprint-own-gate
-bin/apply-to-checkout ~/Work/omarchy/omarchy-installer
-omarchy dev pkg-test                                # install the checkout as packages
-omarchy dev link ~/Work/omarchy/omarchy-installer   # run Omarchy from the checkout, then reboot
+bin/install-face                                    # then reboot
 omarchy setup security face                         # enroll, and choose sudo and polkit, the lock screen, or both
 ```
 
-The driver is built in a worktree so `pkg-test` keeps reading the other PKGBUILDs from omarchy-pkgs' master. An earlier build from this repository (0.1.0-3) also replaced the kernel's ipu-bridge; `makepkg -si` swaps it for the package, which pacman reports as a downgrade, and `dkms status` should then list no `ipu-bridge-hm1092`. `pkg-test` is needed besides the link because PAM, sudoers and systemd name the helpers by their `/usr/bin` paths. Remove an earlier clone of the lock or polkit plugin first (`omarchy plugin remove <you>.lock`), or it runs instead of the checkout's. `bin/run probe` checks the camera after the reboot.
+Coming from a dev link, run `omarchy dev unlink` and reboot first. If the face is already set up, skip the last line: the package moves your PAM stacks to the new gate.
 
-Back to the release: `omarchy remove security face`, `omarchy dev unlink`, `sudo pacman -S omarchy omarchy-settings`.
+Each part only stands in for what Omarchy lacks:
+
+- **The IR driver.** `hm1092-ir-camera` comes from a repository once one carries it, until then from [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213) at a pinned commit.
+- **The sensor's place in `ipu-bridge`.** linux-omarchy dropped it in 7.2.14, so the package ships `ipu-bridge-hm1092`, a DKMS rebuild of the kernel's module with the entry put back. dkms skips it on any kernel that lists the sensor itself.
+- **The lid and fingerprint fixes.** Stock's fingerprint wizards take every `omarchy-hw-laptop-closed` line for their own: removing fingerprint deletes the face's gate, and setting it up beside the face leaves `pam_fprintd` ungated, the bugs [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685) fixes in those wizards. The face's gate is `omarchy-face-laptop-closed`, which they do not match, so nothing of stock's is replaced and the face works with or without that fix.
+- **The lock screen and polkit dialog.** `omarchy-face-integrate` patches the installed plugins into clones through Omarchy's plugin system, and a post-update hook regenerates them. If an update moves the code the patch needs, the clones go, stock's lock and dialog return, a notification says so, and your password keeps working. An Omarchy that ships the face gets no clones.
+
+`bin/run probe` checks the camera after the reboot, and `bin/run installed` checks the install.
+
+Back to stock: `omarchy remove security face`, `sudo pacman -Rns omarchy-dell-xps-face`.
 
 ## How it works
 
@@ -52,21 +49,23 @@ A lock offers one scan within an hour of locking, both set in `/etc/omarchy/face
 ```
 bash bin/setup                                           # shellcheck, jq, executable bits
 bin/check                                                # lint and all tests
-bin/apply-to-checkout ~/Work/omarchy/omarchy-installer   # after a change, then omarchy restart shell
-omarchy dev pkg-test                                     # after a change to the helpers
+bin/install-face                                         # after a change, on a packaged Omarchy
 bin/run                                                  # every manual test, step by step; --list names them
 ```
 
-The checkout's diff is the pull request; `I18N_STRUCTURAL=1 ./test/shell` there is upstream's pull-request gate, and upstream's sync translates the new English strings. `bin/patch-shell-plugins` regenerates `shell/plugins` from a clean upstream checkout when upstream's plugins move. Dev scripts in `bin/` never take a system command's name, since a checkout's `bin/` may be first on PATH.
+For the upstream pull request, `bin/apply-to-checkout ~/Work/omarchy/omarchy-installer` copies the overlay into a checkout, and `omarchy dev pkg-test` and `omarchy dev link` run it. The checkout's diff is the pull request; `I18N_STRUCTURAL=1 ./test/shell` there is upstream's pull-request gate, and upstream's sync translates the new English strings. `bin/patch-shell-plugins` regenerates `shell/plugins` from a clean upstream checkout when upstream's plugins move: `bin/patch-shell-plugins <omarchy>/shell shell`. Dev scripts in `bin/` never take a system command's name, since a checkout's `bin/` may be first on PATH.
 
 ## Layout
 
 ```
-bin/omarchy-*                      the commands: hardware check, setup and remove wizards, PAM helper, key service
+bin/omarchy-*                      the commands: hardware check, setup and remove wizards, PAM helper, lid gate,
+                                   key service, integration with a packaged Omarchy
+bin/install-face                   the install on a packaged Omarchy
+packaging/                         the overlay's package and the ipu-bridge-hm1092 DKMS module
 default/                           the menu rows, the Copilot key binding, the English strings, and the
                                    key service's units, PAM services, lock limits and the lock screen's
                                    sudoers grant the setup copies
-install/                           the first-run invitation; the setup installs the driver package itself
+install/                           the setup invitation and the post-update hook that regenerates the clones
 migrations/                        the invitation for accounts past their first run
 shell/plugins/                     upstream's lock and polkit plugins with the face added
 test/shell.d/                      the suites; overlay-* stay here, the rest go upstream
@@ -74,7 +73,7 @@ test/shell.d/                      the suites; overlay-* stay here, the rest go 
 
 ## Status
 
-Verified on a Dell XPS 14 DA14260, first with Enter as the consent (Omarchy 4.0.4, Linux 7.2.5, with this repository's earlier driver build), then with the Copilot key on linux-omarchy 7.2.8-8 and the driver package from [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213). Applied to upstream's `quattro` at 84cfb93 the overlay passes the translation gate and adds no failing test. Its pull request waits for [omacom/omarchy#15685](https://github.com/omacom/omarchy/pull/15685), and for the driver package to reach Omarchy's repository.
+Verified on a Dell XPS 14 DA14260, first with Enter as the consent (Omarchy 4.0.4, Linux 7.2.5, with this repository's earlier driver build), then with the Copilot key on linux-omarchy 7.2.8-8 and the driver package from [omacom/omarchy-pkgs#1213](https://github.com/omacom/omarchy-pkgs/pull/1213), both on a linked checkout. Installing on a packaged Omarchy with linux-omarchy 7.2.14 has been built and tested in pieces, with `ipu-bridge-hm1092` compiled against that kernel and the stock fingerprint wizards run against the face's stack, but it has not yet run on the hardware. The upstream pull request is [omacom/omarchy#15887](https://github.com/omacom/omarchy/pull/15887).
 
 ## License
 

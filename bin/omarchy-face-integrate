@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# omarchy:summary=Fit the face into the installed Omarchy's lock screen, polkit dialog and menu
+# omarchy:args=[--remove]
+# omarchy:hidden=true
+
+# Omarchy without the face in it takes the face through its own extension
+# points: plugin clones of the lock and polkit dialog, patched from whatever
+# Omarchy is installed, menu rows, and a post-update hook that does this again.
+# An Omarchy that carries the face itself needs none of it.
+
+set -euo pipefail
+
+share=/usr/share/omarchy-dell-xps-face
+stock=${OMARCHY_PATH:-/usr/share/omarchy}
+plugins=$HOME/.config/omarchy/plugins
+menu=$HOME/.config/omarchy/extensions/omarchy-menu.jsonc
+hooks=$HOME/.config/omarchy/hooks/post-update.d
+owner=${USER:-$(id -un)}
+names=(lock polkit)
+
+ours() {
+  jq -e '.omarchy.faceOverlay == true' "$1/manifest.json" >/dev/null 2>&1
+}
+
+drop_clones() {
+  local name id
+
+  for name in "${names[@]}"; do
+    id=$owner.$name
+    if [[ -d $plugins/$id ]] && ours "$plugins/$id"; then
+      omarchy-plugin-disable "$id" >/dev/null || true
+      rm -rf -- "${plugins:?}/$id"
+    fi
+  done
+  omarchy-shell shell rescanPlugins >/dev/null || true
+}
+
+generate() {
+  local name
+
+  mkdir -p "$stage/shell/plugins"
+  for name in "${names[@]}"; do
+    cp -aL "$stock/shell/plugins/$name" "$stage/shell/plugins/" || return 1
+  done
+  python3 -I "$share/bin/patch-shell-plugins" --fallbacks "$stock/shell" "$stage/shell" >/dev/null || return 1
+  for name in "${names[@]}"; do
+    jq --arg id "$owner.$name" --arg source "omarchy.$name" '
+      .id = $id | .name += " with Face" |
+      .omarchy = ((.omarchy // {}) + { clonedFrom: $source, faceOverlay: true })
+    ' "$stage/shell/plugins/$name/manifest.json" >"$stage/manifest.json" || return 1
+    mv "$stage/manifest.json" "$stage/shell/plugins/$name/manifest.json" || return 1
+  done
+}
+
+publish() {
+  local name id
+
+  for name in "${names[@]}"; do
+    id=$owner.$name
+    if [[ -e $plugins/$id ]] && ! ours "$plugins/$id"; then
+      echo "$plugins/$id is your own clone; remove it so the face can use that place." >&2
+      return 1
+    fi
+    if ! diff -r "$stage/shell/plugins/$name" "$plugins/$id" >/dev/null 2>&1; then
+      rm -rf -- "${plugins:?}/$id" || return 1
+      mv "$stage/shell/plugins/$name" "$plugins/$id" || return 1
+      changed+=("$id")
+    fi
+  done
+}
+
+# A shell that is not running finds the clones when it starts.
+activate() {
+  local id attempt
+
+  (( ${#changed[@]} )) || return 0
+  omarchy-shell shell rescanPlugins >/dev/null || return 0
+  for id in "${changed[@]}"; do
+    for (( attempt = 0; attempt < 40; attempt++ )); do
+      omarchy-plugin-list --json | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null && break
+      sleep 0.05
+    done
+    omarchy-plugin-enable "$id" >/dev/null
+  done
+}
+
+add_menu_rows() {
+  local rows last
+
+  [[ ! -f $stock/default/omarchy/omarchy-menu.jsonc ]] ||
+    ! grep -qF '"setup.security.face"' "$stock/default/omarchy/omarchy-menu.jsonc" || return 0
+  grep -qsF '"setup.security.face"' "$menu" && return 0
+
+  rows=$(grep -E '^ *"(setup|remove)\.security\.face"' "$share/default/omarchy/omarchy-menu.jsonc")
+  mkdir -p "$(dirname "$menu")"
+  [[ -f $menu ]] || printf '{\n}\n' >"$menu"
+  last=$(grep -n '^}' "$menu" | tail -n 1 | cut -d: -f1)
+  [[ -n $last ]] || { echo "$menu has no closing brace" >&2; return 1; }
+  sed -i "$((last - 1))r /dev/stdin" "$menu" <<<"$rows"
+}
+
+remove_menu_rows() {
+  [[ ! -f $menu ]] || sed -i -E '/^ *"(setup|remove)\.security\.face"/d' "$menu"
+}
+
+install_hook() {
+  cmp -s "$1" "$hooks/${1##*/}" || omarchy-hook-install post-update "$1" >/dev/null
+}
+
+if [[ ${1:-} == "--remove" ]]; then
+  drop_clones
+  remove_menu_rows
+  rm -f "$hooks/face-integrate.hook" "$hooks/setup-face.hook"
+  exit 0
+fi
+
+if [[ -f $stock/shell/plugins/lock/FaceModel.js ]]; then
+  drop_clones
+  remove_menu_rows
+  exit 0
+fi
+
+mkdir -p "$plugins"
+stage=$(mktemp -d "$plugins/.face.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+
+changed=()
+if ! generate || ! publish; then
+  drop_clones
+  omarchy-notification-send -u critical -g 󰌾 "Face unlock is off" \
+    "Omarchy's lock screen or polkit dialog changed, so they run without the face. Your password works."
+  exit 1
+fi
+
+activate
+add_menu_rows
+install_hook "$share/install/user/first-run/setup-face.hook"
+install_hook "$share/install/user/first-run/face-integrate.hook"

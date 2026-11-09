@@ -22,7 +22,11 @@ for required in bin/omarchy bin/omarchy-provision-first-run migrations test/shel
   }
 done
 
-install -m 755 "$ROOT"/bin/omarchy-* "$checkout/bin/"
+# Stock's extension points are for a packaged Omarchy; a checkout carries the
+# face itself.
+for command in "$ROOT"/bin/omarchy-*; do
+  [[ ${command##*/} == "omarchy-face-integrate" ]] || install -m 755 "$command" "$checkout/bin/"
+done
 for test in "$ROOT"/test/shell.d/*-test.sh; do
   # Upstream owns the shared library and the overlay- suites test this
   # overlay's own scripts, so both stay here; only the checkout's own suites

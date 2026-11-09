@@ -187,9 +187,9 @@ case "${1:-}" in
 esac
 SH
 
-cat >"$stub_bin/omarchy-hyprland-toggle" <<'SH'
+cat >"$stub_bin/hyprctl" <<'SH'
 #!/bin/bash
-printf 'toggle %s\n' "$*" >>"$TEST_LOG"
+printf 'hyprctl %s\n' "$*" >>"$TEST_LOG"
 SH
 
 chmod +x "$stub_bin"/*
@@ -218,7 +218,7 @@ invoke_setup() {
   TEST_LOG="$log" TEST_TMP="$test_tmp" TEST_SECLIB="$seclib" TEST_ETC_HOWDY="$etc_howdy" TEST_CHOICE="${TEST_CHOICE:-1}" \
     TEST_HW="$1" TEST_HOWDY_LAYOUT="$2" TEST_ENROLL="${3:-ok}" TEST_VERIFY="${4:-ok}" \
     TEST_PKG_FAIL="${5:-0}" TEST_DEFAULTS="$ROOT/default" OMARCHY_PATH="$ROOT" TEST_VISUDO="${TEST_VISUDO:-ok}" \
-    TEST_DRIVER_FAIL="${TEST_DRIVER_FAIL:-0}" USER=alice \
+    TEST_DRIVER_FAIL="${TEST_DRIVER_FAIL:-0}" USER=alice HOME="$test_tmp/home" \
     PATH="$stub_bin:/usr/bin:/bin" bash "$copy" </dev/null >"$output" 2>&1 || status=$?
   return "$status"
 }
@@ -269,7 +269,7 @@ reset_fixture
 invoke_setup norelay stable && fail "setup fails while the relay publishes no device"
 grep -q 'relay publishes no device' "$output" || fail "the missing relay device is explained" "$(cat "$output")"
 grep -q 'hm1092-relay' "$output" || fail "the relay unit to check is named" "$(cat "$output")"
-grep -qF 'linux-omarchy 7.2.8-2' "$output" || fail "the kernel whose ipu-bridge lists the sensor is named" "$(cat "$output")"
+grep -qF 'ipu-bridge-hm1092' "$output" || fail "the module that lists the sensor where the kernel does not is named" "$(cat "$output")"
 assert_no_mutation "a missing relay device configures nothing"
 ! grep -q '^aur\|^pkg-add' "$log" || fail "an installed driver is not installed again" "$(cat "$log")"
 pass "setup explains the missing relay device and stops before installing anything"
@@ -355,8 +355,10 @@ verify_tee=$(grep -n $'^sudo\tinstall\t.*\t'"$pamd/omarchy-face-verify"'$' "$log
   grep -qx 'DevicePolicy=closed' "$units/omarchy-face-key.service"; } || fail "the key service may read input devices and nothing else" "$(cat "$units/omarchy-face-key.service")"
 (( $(log_line_of $'sudo\tsystemctl\tdaemon-reload') < $(log_line_of $'sudo\tsystemctl\tenable\t--now\tomarchy-face-key.socket') )) ||
   fail "systemd reads the units before the socket is enabled" "$(cat "$log")"
-grep -qx 'toggle face-key on' "$log" || fail "Hyprland takes the Copilot key from the Omarchy menu" "$(cat "$log")"
-(( $(log_line_of 'toggle face-key on') < verify_tee )) || fail "the key works before verification asks for it" "$(cat "$log")"
+cmp -s "$ROOT/default/hypr/toggles/face-key.lua" "$test_tmp/home/.local/state/omarchy/toggles/hypr/face-key.lua" ||
+  fail "Hyprland takes the Copilot key from the Omarchy menu, also where Omarchy's tree lacks the flag"
+grep -qx 'hyprctl reload' "$log" || fail "Hyprland reads the flag" "$(cat "$log")"
+(( $(log_line_of 'hyprctl reload') < verify_tee )) || fail "the key works before verification asks for it" "$(cat "$log")"
 ! grep -q 'expose_authtok' "$pamd/omarchy-lock-face" || fail "the lock service never asks: the lock screen cannot answer" "$(cat "$pamd/omarchy-lock-face")"
 grep -qxF "device_path = $ir_device" "$seclib/howdy/config.ini" ||
   fail "Howdy's stable config points at the relay's stable device path, not a /dev/video number" "$(cat "$seclib/howdy/config.ini")"

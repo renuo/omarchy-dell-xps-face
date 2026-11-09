@@ -4,7 +4,8 @@
 # what should happen, runs it, shows what the key service and Howdy logged,
 # and records the verdict; automatic steps judge for themselves. Without
 # arguments every step runs in order, named steps run alone, --list names
-# them. Omarchy runs the overlay from a linked checkout (see the README).
+# them. Omarchy runs the overlay from its package or a linked checkout (see
+# the README).
 
 set -uo pipefail
 
@@ -20,7 +21,7 @@ me=${USER:-$(id -un)}
 
 steps=(
   "probe|The IR camera streams for Howdy"
-  "linked|Omarchy runs a checkout with this overlay applied"
+  "installed|Omarchy runs this overlay, from its package or a checkout"
   "setup|The setup enrolls and verifies with the Copilot key, never a password"
   "sudo-key|sudo: the Copilot key scans"
   "sudo-typed|sudo: the key drops what was typed and scans"
@@ -190,7 +191,7 @@ step_probe() {
     fi
   done
   if [[ -z $driver ]]; then
-    result failed "no driver bound to the sensor: install hm1092-ir-camera on linux-omarchy 7.2.8-2 or later and reboot"
+    result failed "no driver bound to the sensor: bin/install-face brings hm1092-ir-camera, then reboot"
     return
   fi
   say "driver: $driver"
@@ -202,11 +203,35 @@ step_probe() {
   result passed
 }
 
-step_linked() {
+# The package's helpers and the clones omarchy-face-integrate generates.
+step_installed_package() {
+  local stale=() fixes=() source name
+
+  for source in "$ROOT"/bin/omarchy-*; do
+    cmp -s "$source" "$bin_dir/${source##*/}" || stale+=("$bin_dir/${source##*/}")
+  done
+  (( ${#stale[@]} == 0 )) || fixes+=("bin/install-face")
+  for name in lock polkit; do
+    if ! jq -e '.omarchy.faceOverlay == true' "$plugins_dir/$me.$name/manifest.json" >/dev/null 2>&1; then
+      stale+=("the plugin clone $me.$name")
+      fixes+=("omarchy-face-integrate")
+    fi
+  done
+
+  if (( ${#stale[@]} == 0 )); then
+    result passed
+  else
+    printf '  not this overlay: %s\n' "${stale[@]}"
+    printf '  fix with: %s\n' "${fixes[@]}"
+    result failed "then run bin/run again"
+  fi
+}
+
+step_installed() {
   local stale=() fixes=() source relative manifest clone packaged=0
 
   if [[ -z ${OMARCHY_PATH:-} || $OMARCHY_PATH == /usr/share/omarchy ]]; then
-    result failed "Omarchy runs its release: bin/apply-to-checkout <checkout>, omarchy dev link <checkout>, reboot"
+    step_installed_package
     return
   fi
 
@@ -440,7 +465,7 @@ for name in "${selected[@]}"; do
   step_started=$(date +%s)
   "step_${name//-/_}"
   # A camera that is not ready or a stale checkout leaves nothing to try.
-  if (( $# == 0 )) && [[ $name == probe || $name == linked ]] && [[ ${results[$name]:-} == failed ]]; then
+  if (( $# == 0 )) && [[ $name == probe || $name == installed ]] && [[ ${results[$name]:-} == failed ]]; then
     break
   fi
 done

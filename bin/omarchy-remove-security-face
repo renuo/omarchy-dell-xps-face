@@ -85,6 +85,11 @@ remove_file "$verify_pam" "the face verification service an interrupted setup le
 remove_file "$face_conf" "the lock screen's face limits"
 remove_face_key
 
+# The lock screen and polkit dialog go back to Omarchy's own.
+if omarchy-cmd-present omarchy-face-integrate; then
+  omarchy-face-integrate --remove
+fi
+
 # The face models are untracked package data, so clear them while Howdy's CLI
 # is still there to do it; a failure here must not leave them behind.
 if omarchy-pkg-present howdy; then

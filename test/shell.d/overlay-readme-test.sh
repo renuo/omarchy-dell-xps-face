@@ -21,12 +21,11 @@ grep -q 'alt="[^"]\+"' <<<"$(grep '<img ' "$ROOT/README.md")" || fail "every pic
 (( $(grep -c '<img [^>]*alt="[^"]\+"' "$ROOT/README.md") == 3 )) || fail "every pictogram has alt text"
 pass "the README's pictograms exist, parse, and describe themselves"
 
-# The driver package lives in omarchy-pkgs, and the fingerprint gate fix the
-# face's removal relies on in omarchy; the overlay keeps no copy of either.
+# The driver package lives in omarchy-pkgs; the overlay keeps no copy of it. The
+# face's own gate stands in for the fingerprint fix in omarchy#15685.
 for pr in 'omacom/omarchy-pkgs/pull/1213' 'omacom/omarchy/pull/15685'; do
   grep -qF "$pr" "$ROOT/README.md" || fail "the README links $pr"
 done
 grep -qF 'omarchy channel set edge' "$ROOT/README.md" || fail "the README names the edge channel the driver's kernel is on"
-[[ ! -e $ROOT/packaging ]] || fail "the overlay carries no copy of the driver package"
-! grep -n 'packaging/' "$ROOT/README.md" "$ROOT/docs/face-authentication.md" "$ROOT"/bin/* || fail "nothing points at the dropped packaging/"
-pass "the README builds on the driver package and the fingerprint gate fix, which live upstream"
+[[ ! -e $ROOT/packaging/hm1092-ir-camera ]] || fail "the overlay carries no copy of the driver package"
+pass "the README builds on the driver package, which lives upstream, and names the fingerprint fix the face's gate replaces"

@@ -1,1 +1,6 @@
 __pycache__/
+
+# makepkg, outside bin/install-face
+packaging/*/src/
+packaging/*/pkg/
+packaging/*/*.pkg.tar.*

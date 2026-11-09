@@ -102,7 +102,7 @@ reset_fixture() {
   cp "$ROOT/default/omarchy/face.conf" "$omarchy/default/omarchy/"
   cp -r "$ROOT/shell/plugins/lock" "$ROOT/shell/plugins/polkit" "$omarchy/shell/plugins/"
   grep '"\(setup\|remove\).security.face"' "$ROOT/default/omarchy/omarchy-menu.jsonc" >"$omarchy/default/omarchy/omarchy-menu.jsonc"
-  cp "$ROOT/bin/omarchy-face-match" "$ROOT/bin/omarchy-face-key" "$usr_bin/"
+  cp "$ROOT"/bin/omarchy-* "$usr_bin/"
   printf '%s\n' "$face_line" 'auth include system-auth' >"$pamd/sudo"
   printf '%s\n' "$face_line" 'auth include system-auth' >"$pamd/polkit-1"
   printf '%s\n' 'auth required pam_exec.so seteuid quiet stdout /usr/bin/omarchy-face-match' >"$pamd/omarchy-lock-face"
@@ -133,7 +133,7 @@ summary_says() {
 
 reset_fixture
 invoke -- --list || fail "--list succeeds"
-expected="probe linked setup sudo-key sudo-typed sudo-password sudo-enter sudo-script polkit-key polkit-password conflict menu lock-key lock-failed lock-expired lock-suspend lid"
+expected="probe installed setup sudo-key sudo-typed sudo-password sudo-enter sudo-script polkit-key polkit-password conflict menu lock-key lock-failed lock-expired lock-suspend lid"
 [[ $(awk '{ printf "%s%s", sep, $1; sep = " " }' "$output") == "$expected" ]] || fail "--list names every step in order" "$(cat "$output")"
 (( $(awk 'NF < 3' "$output" | wc -l) == 0 )) || fail "--list describes every step" "$(cat "$output")"
 invoke -- sudo-kee && fail "an unknown step is refused"
@@ -141,38 +141,48 @@ grep -q 'unknown step: sudo-kee' "$output" || fail "the refusal names the step" 
 pass "bin/run lists its steps and refuses unknown ones"
 
 reset_fixture
-invoke -- linked || fail "a linked checkout carrying this overlay passes" "$(cat "$output")"
-summary_says linked passed || fail "the summary records the pass" "$(cat "$output")"
-TEST_OMARCHY_PATH=/usr/share/omarchy invoke -- linked && fail "the released Omarchy fails"
-grep -q 'omarchy dev link' "$output" || fail "linking a checkout is named as the fix" "$(cat "$output")"
+invoke -- installed || fail "a linked checkout carrying this overlay passes" "$(cat "$output")"
+summary_says installed passed || fail "the summary records the pass" "$(cat "$output")"
+TEST_OMARCHY_PATH=/usr/share/omarchy invoke -- installed && fail "a packaged Omarchy without the clones fails"
+grep -q 'omarchy-face-integrate' "$output" || fail "generating the clones is named as the fix" "$(cat "$output")"
+for name in lock polkit; do
+  mkdir -p "$plugins/alice.$name"
+  printf '{"id":"alice.%s","omarchy":{"clonedFrom":"omarchy.%s","faceOverlay":true}}\n' "$name" "$name" >"$plugins/alice.$name/manifest.json"
+done
+TEST_OMARCHY_PATH=/usr/share/omarchy invoke -- installed || fail "a packaged Omarchy with the package and clones passes" "$(cat "$output")"
+echo '# edited' >>"$usr_bin/omarchy-face-key"
+TEST_OMARCHY_PATH=/usr/share/omarchy invoke -- installed && fail "a stale package fails"
+grep -q 'bin/install-face' "$output" || fail "reinstalling the package is named as the fix" "$(cat "$output")"
+rm -rf "$plugins"/alice.*
+cp "$ROOT/bin/omarchy-face-key" "$usr_bin/"
 echo '# edited' >>"$omarchy/default/pam.d/omarchy-lock-face"
-invoke -- linked && fail "a checkout with a stale default file fails"
+invoke -- installed && fail "a checkout with a stale default file fails"
 grep -qF "$omarchy/default/pam.d/omarchy-lock-face" "$output" || fail "the stale default file is named" "$(cat "$output")"
 cp "$ROOT/default/pam.d/omarchy-lock-face" "$omarchy/default/pam.d/"
 echo '# edited' >>"$omarchy/shell/plugins/polkit/PolkitAgent.qml"
-invoke -- linked && fail "a checkout without the current overlay fails"
+invoke -- installed && fail "a checkout without the current overlay fails"
 grep -qF "$omarchy/shell/plugins/polkit/PolkitAgent.qml" "$output" || fail "the stale checkout file is named" "$(cat "$output")"
 grep -qF "bin/apply-to-checkout $omarchy" "$output" || fail "applying the overlay is named as the fix" "$(cat "$output")"
 ! grep -q 'pkg-test' "$output" || fail "packaged helpers that are current ask for no package build" "$(cat "$output")"
 reset_fixture
 echo '# edited' >>"$usr_bin/omarchy-face-key"
-invoke -- linked && fail "stale packaged helpers fail"
+invoke -- installed && fail "stale packaged helpers fail"
 grep -qF "$usr_bin/omarchy-face-key" "$output" || fail "the stale packaged helper is named" "$(cat "$output")"
 grep -q 'omarchy dev pkg-test' "$output" || fail "building the packages from the checkout is named as the fix" "$(cat "$output")"
 reset_fixture
-TEST_GRANT=1 invoke -- linked && fail "a lock screen face without its grant fails"
+TEST_GRANT=1 invoke -- installed && fail "a lock screen face without its grant fails"
 grep -q "the lock's sudoers grant" "$output" || fail "a missing grant is named" "$(cat "$output")"
 grep -q 'omarchy setup security face' "$output" || fail "the setup, which installs the grant, is named as the fix" "$(cat "$output")"
 ! grep -q 'pkg-test' "$output" || fail "the packages do not carry the grant" "$(cat "$output")"
 rm "$pamd/omarchy-lock-face"
-TEST_GRANT=1 invoke -- linked || fail "without the face on the lock screen no grant is needed" "$(cat "$output")"
+TEST_GRANT=1 invoke -- installed || fail "without the face on the lock screen no grant is needed" "$(cat "$output")"
 reset_fixture
 mkdir -p "$plugins/alice.lock"
 printf '{"id":"alice.lock","omarchy":{"clonedFrom":"omarchy.lock"}}\n' >"$plugins/alice.lock/manifest.json"
-invoke -- linked && fail "a clone of the lock plugin fails"
+invoke -- installed && fail "a clone of the lock plugin fails"
 grep -q 'omarchy plugin remove alice.lock' "$output" || fail "removing the clone is named as the fix" "$(cat "$output")"
-summary_says linked failed || fail "the summary records the failure" "$(cat "$output")"
-pass "bin/run checks that Omarchy runs a checkout with this overlay, its packaged helpers and no plugin clones"
+summary_says installed failed || fail "the summary records the failure" "$(cat "$output")"
+pass "bin/run checks that Omarchy runs this overlay, from its package and clones or from a checkout without clones"
 
 reset_fixture
 printf '%s\n' 'Oct 14 omarchy-face-key[1]: sudo true (from bash) waits for the key' 'Oct 14 howdy[2]: Login approved for alice' >"$journal"
@@ -237,7 +247,7 @@ grep -qF "device: $ir_device" "$output" || fail "the probe names the relay devic
 reset_camera 0 1
 invoke -- probe && fail "a sensor without a driver fails the probe"
 grep -q 'hm1092-ir-camera' "$output" || fail "the missing driver names the package" "$(cat "$output")"
-grep -qF 'linux-omarchy 7.2.8-2' "$output" || fail "the missing driver names the kernel it needs" "$(cat "$output")"
+grep -q 'then reboot' "$output" || fail "the missing driver names the reboot it needs" "$(cat "$output")"
 reset_camera 1 0
 invoke -- probe && fail "a driver without the relay device fails the probe"
 grep -q 'hm1092-relay' "$output" || fail "the missing relay device names its unit" "$(cat "$output")"

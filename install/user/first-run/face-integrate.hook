@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -e
+
+# An update may have moved the lock screen or the polkit dialog, whose clones
+# carry the face.
+if command -v omarchy-face-integrate >/dev/null; then
+  omarchy-face-integrate
+fi
